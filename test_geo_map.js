@@ -63,10 +63,10 @@ ${src}
 
   // ---- rankCampuses ----
   var ring = [];
+  var offs = [[25.05, 102.7], [25.05, 102.72], [25.03, 102.7], [25.03, 102.72]]; // clean literals — no float drift in URL asserts
   for (var i = 0; i < 4; i++) {
     ring.push({ id: 'r' + i, name: 'R' + i, days: 2, samples: 2, capturedAt: 'x',
-      wgsLat: 25.04 + (i < 2 ? 0.01 : -0.01), wgsLng: 102.71 + (i % 2 ? 0.01 : -0.01),
-      lat: 25.04 + (i < 2 ? 0.01 : -0.01), lng: 102.71 + (i % 2 ? 0.01 : -0.01) });
+      lat: offs[i][0], lng: offs[i][1] });
   }
   var camps = [
     { name: 'Near', lat: 25.04, lng: 102.71 },
@@ -79,6 +79,8 @@ ${src}
   report('far campus avg > 15km, none within 5km', far.avgKm > 15 && far.within5 === 0);
   report('median computed', typeof near.medKm === 'number' && near.medKm > 1 && near.medKm < 2);
   report('rows carry student + km + drive link', near.rows.length === 4 && near.rows[0].name && near.rows[0].km >= 0 && near.rows[0].driveUrl.indexOf('uri.amap.com/navigation') === 8);
+  report('driveUrl goes student -> campus (commute direction)',
+    near.rows[0].driveUrl.indexOf('from=102.7,25.05,R0') > 0 && near.rows[0].driveUrl.indexOf('to=102.71,25.04,Near') > 0);
 
   // ---- gaodeDriveUrl ----
   var u = gaodeDriveUrl({ lat: 25.04, lng: 102.71 }, { lat: 24.90, lng: 102.80 }, 'Campus A', 'Li "Lily"');

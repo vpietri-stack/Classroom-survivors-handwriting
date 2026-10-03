@@ -69,7 +69,8 @@ function rankCampuses(campuses, points) {
         var rows = (points || []).map(function (p) {
             var km = haversineKm(c.lat, c.lng, p.lat, p.lng);
             kms.push(km);
-            return { id: p.id, name: p.name, km: km, driveUrl: gaodeDriveUrl(c, p, c.name, p.name) };
+            // Commute direction: home -> campus (that's the trip students make).
+            return { id: p.id, name: p.name, km: km, driveUrl: gaodeDriveUrl(p, c, p.name, c.name) };
         });
         kms.sort(function (a, b) { return a - b; });
         return {
