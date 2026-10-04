@@ -1,16 +1,18 @@
 # Testing
 
-> **Last verified:** 2026-09-27 · **Part of:** [Classroom-survivors Repo Wiki](README.md)
+> **Last verified:** 2026-10-05 · **Part of:** [Classroom-survivors Repo Wiki](README.md)
 
 **Owner files:** `package.json` (`test` script), `test_*.js` (root), `api/test_auth.js`, plus the out-of-chain `vs_*` test family.
 
-`npm test` (root) is the **required-green gate before any commit**. It chains 16 Node scripts
-(`package.json:7`). Verified 2026-09-28: **517 assertions, 0 failures** (counts per file below;
+`npm test` (root) is the **required-green gate before any commit**. It chains 18 Node scripts
+(`package.json:7`). Verified 2026-10-05: **589 assertions, 0 failures** (counts per file below;
 the stamp guard prints no summary line).
 
 ```text
 test_deploy_stamp_sync.js          # GUARD — runs FIRST, fails run on stamp drift   (— )
-test_widgets_regression.js         # jsdom — scramble/spelling widgets, real scripts (81)
+test_widgets_regression.js         # jsdom — scramble + handwriting answer row, real scripts (82)
+test_handwriting.js                # pure Node — handwriting mask maths, synthetic rings (40)
+test_handwriting_browser.js        # Playwright + real Chrome — Fredoka glyph masks + trace flow (30)
 test_sr_once_per_session.js        # SR spaced-repetition invariants (sr_engine)      (22)
 test_round_e_dedup.js              # Round E sub-round pair selection rules           (16)
 test_session_flush_deadline.js     # flush deadline + queue/SR sync contracts (vm)    (84)
@@ -23,7 +25,7 @@ test_asset_manifest.js             # sprite/music/sfx lists + 3-way vocab naming
 test_geo_events.js                 # saveAnalytics geo v2: diversion, samples, consensus (15)
 test_geo_capture.js                # client capture gate/rounding/flags (vm)          (15)
 test_geo_export.js                 # geo_export: conversion, CSV, map HTML, escaping  (23)
-test_geo_map.js                    # geo_map: GCJ points, haversine, ranking, Gaode links (17)
+test_geo_map.js                    # geo_map: GCJ points, haversine, ranking, Gaode links (18)
 test_dashboard_security.js         # sanitizeAvatar allowlist + authorizeClearGeo     (7)
 ```
 
@@ -37,9 +39,9 @@ Two extra aliases: `npm run test:td` = `test_td_gate.js && test_td_core.js`. The
 
 | Harness | Files | How it works |
 |---|---|---|
-| **Pure Node** (no DOM) | stamp guard, auto-archive, archive-merge, sr tests (VM-loaded pure logic) | `node -e` style asserts; some load real source into a `vm` context with fixture data |
-| **jsdom, real scripts** | `test_widgets_regression.js`, `test_sr_once_per_session.js`, `test_td_gate.js`, `test_round_e_dedup.js` | Loads `index.html` into JSDOM, strips remote `<script src>`, evals the REAL project scripts in index.html order into one blob (so top-level bindings are visible), stubs only externals (Phaser, Web Audio, Firebase, matchMedia). Asserts real widget behavior (placements, freezes, depleting banks). |
-| **Playwright + real Chrome** | `test_td_core.js` (and the standalone `vs_*` device/gameplay tests) | `playwright-core` driving `C:\Program Files\Google\Chrome\Application\chrome.exe` against `file:///<repo>/index.html`. Network-dependent environment (jsdom can't run Phaser). |
+| **Pure Node** (no DOM) | stamp guard, auto-archive, archive-merge, sr tests (VM-loaded pure logic), `test_handwriting.js` | `node -e` style asserts; some load real source into a `vm` context with fixture data. `test_handwriting.js` `require`s `handwriting.js` (it exports its pure functions under a `module.exports` guard that is inert in the browser) and drives the mask maths with synthetic rings. |
+| **jsdom, real scripts** | `test_widgets_regression.js`, `test_sr_once_per_session.js`, `test_td_gate.js`, `test_round_e_dedup.js` | Loads `index.html` into JSDOM, strips remote `<script src>`, evals the REAL project scripts in index.html order into one blob (so top-level bindings are visible), stubs only externals (Phaser, Web Audio, Firebase, matchMedia). Asserts real widget behavior (placements, freezes, depleting banks). **jsdom has no 2D canvas**, so the handwriting trace box cannot run there — only its answer row can. |
+| **Playwright + real Chrome** | `test_td_core.js`, `test_handwriting_browser.js` (and the standalone `vs_*` device/gameplay tests) | `playwright-core` driving `C:\Program Files\Google\Chrome\Application\chrome.exe` against `file:///<repo>/index.html`. Network-dependent environment (jsdom can't run Phaser, and only a real browser can rasterise the Fredoka glyph masks). |
 | **HTTP integration** | `api/test_auth.js` | Starts from a running `func start` on `:7072`; exercises login/token/save flows against the test Cosmos container. |
 
 jsdom harness details that bite: the script order list inside each test **must mirror index.html** — adding a new production script means updating the tests' `order` arrays; tests eval scripts as one concatenated blob so cross-file top-level bindings resolve; `file://` URL is used so relative asset paths resolve.

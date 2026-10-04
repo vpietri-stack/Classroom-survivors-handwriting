@@ -3,7 +3,6 @@
     /* Responsive sizing variables — optimized for phone-first (portrait) */
     --slot-size: clamp(40px, 12vw, 56px);
     --tile-size: clamp(44px, 13vw, 58px);
-    --key-size: clamp(40px, 12vw, 52px);
     --font-sm: clamp(0.85rem, 3vw, 1rem);
     --font-md: clamp(1rem, 3.5vw, 1.2rem);
     --font-lg: clamp(1.1rem, 4vw, 1.4rem);
@@ -411,35 +410,78 @@ body {
     box-shadow: 0 1px 0 #d97706, 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
-.study-key {
-    width: var(--key-size);
-    height: clamp(44px, 13vw, 58px);
-    min-width: var(--touch-min);
-    min-height: var(--touch-min);
-    background: linear-gradient(180deg, #475569 0%, #334155 100%);
-    border-radius: 10px;
-    color: white;
-    font-weight: 700;
-    font-size: var(--font-md);
-    box-shadow: 0 3px 0 #1e293b, 0 4px 8px rgba(0, 0, 0, 0.2);
-    transition: transform 0.1s, background-color 0.15s;
-    border: none;
-    cursor: pointer;
+/* ===== Study Round C: Handwriting ===== */
+.hw-trace-wrap {
+    position: relative;
+    line-height: 0;
 }
 
-.study-key:hover {
-    background: linear-gradient(180deg, #64748b 0%, #475569 100%);
+.hw-trace-canvas {
+    width: min(52vw, 180px);
+    height: min(52vw, 180px);
+    background: #fffdf7;
+    border: 3px solid rgba(148, 163, 184, 0.55);
+    border-radius: 14px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
+    touch-action: none;
+    cursor: crosshair;
 }
 
-.study-key:active {
-    transform: translateY(2px);
-    box-shadow: 0 1px 0 #1e293b;
+/* Separators (space / - / . / ? / !) are not slots at all: no box, no shadow.
+   The !important is required because body.kid-friendly .study-slot forces a
+   background and border onto every .study-slot. */
+.study-slot.hw-slot-fixed {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
 }
 
-.study-key.used {
-    opacity: 0.3;
-    pointer-events: none;
-    box-shadow: none;
+/* The kid theme forces a background/border onto every .study-slot with higher
+   specificity, so the separator needs its own kid-mode override. */
+body.kid-friendly .study-slot.hw-slot-fixed {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+}
+
+/* A letter the student does not have to write — either given as context or
+   revealed after they ran out of attempts. Dashed border is the visual language
+   for "this one is provided"; a letter they wrote uses a solid .bg-green-500. */
+.study-slot.hw-slot-given {
+    background: #334155;
+    border-color: rgba(255, 255, 255, 0.18);
+    border-style: dashed;
+    color: #94a3b8;
+}
+
+.study-slot.hw-slot-revealed {
+    background: #78350f;
+    border-color: rgba(251, 191, 36, 0.45);
+    color: #fcd34d;
+}
+
+/* The gap the next accepted letter will land in. */
+.study-slot.hw-slot-active {
+    border-color: #fbbf24;
+    animation: hw-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hw-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.22), 0 2px 6px rgba(0, 0, 0, 0.2); }
+    50% { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.40), 0 2px 6px rgba(0, 0, 0, 0.2); }
+}
+
+/* A rejected trace shakes and wipes. No red: it means "not yet", not "wrong". */
+.hw-shake {
+    animation: hw-shake 0.32s ease-in-out;
+}
+
+@keyframes hw-shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-7px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(3px); }
 }
 
 .sentence-slot {
@@ -1086,13 +1128,24 @@ body.kid-friendly .study-letter-btn:hover {
     background: #ffa726 !important;
 }
 
-body.kid-friendly .study-key {
-    background: #d7ccc8 !important;
-    color: #4e342e !important;
+body.kid-friendly .hw-trace-canvas {
+    border: 3px solid #d7ccc8 !important;
 }
 
-body.kid-friendly .study-key:hover {
-    background: #bcaaa4 !important;
+body.kid-friendly .study-slot.hw-slot-given {
+    background: #efebe9 !important;
+    border: 2px dashed #bcaaa4 !important;
+    color: #6d4c41 !important;
+}
+
+body.kid-friendly .study-slot.hw-slot-revealed {
+    background: #ffe0b2 !important;
+    border-color: #ffb74d !important;
+    color: #6d4c41 !important;
+}
+
+body.kid-friendly .study-slot.hw-slot-active {
+    border-color: #fb8c00 !important;
 }
 
 body.kid-friendly .study-word-tile {
@@ -1243,7 +1296,6 @@ body.kid-friendly .translation-hint {
     :root {
         --slot-size: clamp(34px, 10vw, 42px);
         --tile-size: clamp(38px, 11vw, 44px);
-        --key-size: clamp(34px, 10vw, 42px);
         --font-sm: 0.8rem;
         --font-md: 0.9rem;
         --gap-sm: 4px;
@@ -1303,7 +1355,6 @@ body.kid-friendly .translation-hint {
     :root {
         --slot-size: clamp(44px, 5vw, 56px);
         --tile-size: clamp(48px, 5.5vw, 60px);
-        --key-size: clamp(44px, 5vw, 54px);
     }
     
     #studyModeOverlay {
@@ -1390,8 +1441,7 @@ body.kid-friendly .translation-hint {
     #sentence-word-bank,
     #scramble-slots,
     #scramble-bank,
-    #spelling-display,
-    #virtual-keyboard {
+    #handwriting-slots {
         max-width: 700px;
     }
 }

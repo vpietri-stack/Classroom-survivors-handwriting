@@ -56,7 +56,7 @@
     <link href="fonts/fonts.css?v=1" rel="stylesheet">
     <!-- Self-hosted Font Awesome (was cdnjs.cloudflare.com) -->
     <link rel="stylesheet" href="lib/fontawesome/css/all.min.css?v=1">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2026-10-05a">
     <script src="phaser.min.js"></script>
 </head>
 
@@ -883,7 +883,10 @@
          cache eviction). Must load BEFORE tower_defense.js reads AssetCache. -->
     <script src="asset_cache.js?v=3"></script>
     <script src="tower_defense.js?v=2026-07-28c"></script>
-    <script src="study_mode.js?v=2026-09-08a"></script>
+    <!-- Handwriting round (study Round C): mask geometry + trace box. Must load
+         before study_mode.js, which calls hwEnsureFont()/hwCreateTraceBox(). -->
+    <script src="handwriting.js?v=2026-10-05a"></script>
+    <script src="study_mode.js?v=2026-10-05a"></script>
     <script>
         // School Defense 3D (three.js POC) menu entry: revealed ONLY where
         // THREE_TD_ENABLED (config.js) is true — preview deploy, localhost,

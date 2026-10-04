@@ -466,13 +466,17 @@ function finishRoundC() {
 }
 
 
-// --- ROUND C: Spelling (type from a 10-key board) ---
+// --- ROUND C: Handwriting (write the missing letters) ---
+// Internal round 'D' renders as "Round C" — the same offset convention the rest
+// of this file uses (internal 'C' renders as "Round B").
 function startRoundD() {
     STUDY_STATE.round = 'D';
     STUDY_STATE.currentWordIndex = 0;
-    updateStudyUI("Round C: Spelling", "Type the word.");
+    updateStudyUI("Round C: Handwriting", "Write the missing letters.");
     startExerciseTracking();
-    nextRoundDWord();
+    // Fredoka must be loaded before the first glyph mask is built, otherwise the
+    // outline (and so the scoring target) would be a fallback font's shape.
+    hwEnsureFont().then(() => nextRoundDWord());
 }
 
 function nextRoundDWord() {
@@ -491,228 +495,159 @@ function nextRoundDWord() {
             <div id="roundD-translation" class="translation-hint hidden"></div>
             <img id="roundD-image" class="vocab-image hidden" alt="Vocabulary Image">
 
-            <div id="spelling-display" class="flex flex-wrap justify-center gap-[var(--gap-xs)] min-h-[54px] w-full px-2 text-white"></div>
+            <div id="handwriting-slots" class="flex flex-wrap justify-center gap-[var(--gap-xs)] min-h-[60px] w-full px-4 text-white"></div>
 
-            <div id="virtual-keyboard" class="flex flex-wrap justify-center gap-[var(--gap-sm)] w-full max-w-lg px-2"></div>
+            <div id="handwriting-trace" class="flex flex-col items-center"></div>
 
-            <div class="flex gap-3 w-full justify-center">
-                <button onclick="checkRoundD()" class="game-btn bg-green-500 py-3 px-6 flex-1 max-w-[160px]">CHECK</button>
-                <button onclick="clearRoundD()" class="game-btn bg-gray-500 py-3 px-6 flex-1 max-w-[160px]">CLEAR</button>
-            </div>
+            <button onclick="clearRoundD()" aria-label="Erase what you wrote" class="game-btn bg-gray-500 py-2 px-6">
+                <i class="fas fa-eraser"></i> ERASE
+            </button>
         </div>
     `;
     showTranslation('roundD-translation', word);
     showVocabImage('roundD-image', word);
 
-    // Board = the word's own letters (shuffled) + enough random fillers to reach 10 keys.
+    // Slots are 1:1 with the word's characters. Punctuation and spaces stay
+    // visible and fixed; a RANDOM subset of the letters (max ROUND_D_MAX_GAPS)
+    // become gaps the student handwrites, and the rest are given as context —
+    // so a 29-letter item costs the same as a 6-letter one.
     const punct = [' ', "'", "-", ".", "?", "!", ","];
-    const needed = word.split('').filter(c => !punct.includes(c));
-    const alphabet = "abcdefghijklmnopqrstuvwxyz";
-    let keys = [...needed];
-    while (keys.length < 10) {
-        keys.push(alphabet[Math.floor(Math.random() * alphabet.length)]);
-    }
-    keys.sort();
+    roundDWord = word;
+    roundDSlots = word.split('').map(ch => punct.includes(ch)
+        ? { type: 'fixed', char: ch }
+        : { type: 'letter', char: ch, gap: false, filled: false, given: false });
+    roundDGapOrder = hwPickGaps(word, ROUND_D_MAX_GAPS);
+    roundDGapOrder.forEach(i => { roundDSlots[i].gap = true; });
+    roundDCursor = 0;
 
-    // Persist: which shuffled key index is still unplaced, plus the word's slot layout.
-    const slots = [];
-    for (let i = 0; i < word.length; i++) {
-        const ch = word[i];
-        if (punct.includes(ch)) slots.push({ type: 'fixed', char: ch });
-        else slots.push({ type: 'letter', index: i });
-    }
+    renderRoundDSlots();
 
-    const kbDiv = document.getElementById('virtual-keyboard');
-    kbDiv.innerHTML = '';
-    keys.forEach((char, i) => {
-        const btn = document.createElement('button');
-        btn.className = "study-key";
-        btn.innerText = char;
-        btn.dataset.keyIndex = i;
-        btn.onclick = () => typeRoundD(i);
-        kbDiv.appendChild(btn);
-    });
+    const mount = document.getElementById('handwriting-trace');
+    if (roundDTrace) roundDTrace.destroy();
+    roundDTrace = hwCreateTraceBox({ onAccept: roundDAcceptLetter, onReject: roundDRejectLetter });
+    mount.appendChild(roundDTrace.el);
+    roundDTrace.measure();
 
-    roundDInput = "";
-    roundDSlots = slots;
-    roundDBaseKeys = [...keys];
-    roundDPlacement = [];
-    roundDUsedKeys = [];
-    updateRoundDDisplay();
+    roundDShowTarget();
     playTTS();
 }
 
-let roundDInput = "";
-let roundDSlots = [];
-let roundDBaseKeys = [];
-// Per-letter-slot -> tile index (which keyboard tile filled this slot), and
-// per-tile used flag. These decouple "which tile is placed" from typing order,
-// so a used tile is blocked by its OWN placement, not by which typing position
-// it landed in (the old bug blocked an 'a' tile just because two 'd's were
-// typed first).
-let roundDPlacement = [];
-let roundDUsedKeys = [];
+let roundDWord = '';
+let roundDSlots = [];      // 1:1 with the word's characters
+let roundDGapOrder = [];   // gap slot indices, left-to-right
+let roundDCursor = 0;      // index into roundDGapOrder: the gap being written
+let roundDAttempts = 0;    // rejected traces on the CURRENT gap
+let roundDGuided = false;  // has the outline faded in yet?
+let roundDTrace = null;    // the hwCreateTraceBox widget
 
-// Rebuild the typed string from the per-slot placement (slot order), so display
-// and validation read a coherent left-to-right string regardless of which tile
-// was used for each slot.
-function roundDRebuild() {
-    roundDInput = roundDPlacement.map(ki => ki === undefined ? '' : roundDBaseKeys[ki]).join('');
-}
+const ROUND_D_MAX_GAPS = 6;      // cap per word, so a 29-letter item stays quick
+const ROUND_D_GUIDE_AFTER = 2;   // rejected traces before the outline fades in
+const ROUND_D_GIVE_UP_AFTER = 5; // rejected traces before we reveal and move on
 
-function typeRoundD(keyIndex) {
-    if (STUDY_STATE.isTransitioning || STUDY_STATE._roundDFrozen) return;
-    const letterSlotCount = roundDSlots.filter(s => s.type === 'letter').length;
-    // Find the first empty letter-slot to fill (L-to-R slot order, not typing order).
-    let slotFullIdx = -1;
-    for (let i = 0; i < roundDSlots.length; i++) {
-        if (roundDSlots[i].type === 'letter' && roundDPlacement[i] === undefined) { slotFullIdx = i; break; }
-    }
-    if (slotFullIdx === -1) return; // all slots filled
-    if (roundDUsedKeys[keyIndex]) return; // this tile already placed
-    roundDUsedKeys[keyIndex] = true;
-    roundDPlacement[slotFullIdx] = keyIndex;
-    updateRoundDDisplay();
-}
-
-function deleteRoundDLast() {
-    if (STUDY_STATE.isTransitioning || STUDY_STATE._roundDFrozen) return;
-    // Remove the rightmost placed letter-slot (L-to-R), freeing its tile.
-    for (let i = roundDSlots.length - 1; i >= 0; i--) {
-        if (roundDSlots[i].type === 'letter' && roundDPlacement[i] !== undefined) {
-            removeRoundDLetter(i);
-            return;
-        }
-    }
-}
-
-function removeRoundDLetter(slotFullIdx) {
-    if (STUDY_STATE.isTransitioning || STUDY_STATE._roundDFrozen) return;
-    if (roundDSlots[slotFullIdx].type !== 'letter') return;
-    const placedKey = roundDPlacement[slotFullIdx];
-    if (placedKey === undefined) return; // already empty
-    roundDUsedKeys[placedKey] = false;
-    roundDPlacement[slotFullIdx] = undefined;
-    roundDRebuild();
-    updateRoundDDisplay();
-}
-
-function clearRoundD() {
-    // Allow CLEAR during the wrong-answer reveal (skip the 5s wait), but not the
-    // 1s success transition to the next word.
-    if (STUDY_STATE.isTransitioning) return;
-    if (STUDY_STATE._roundDResetTimer) { clearTimeout(STUDY_STATE._roundDResetTimer); STUDY_STATE._roundDResetTimer = null; }
-    STUDY_STATE._roundDFeedback = false;
-    STUDY_STATE._roundDFrozen = false;
-    roundDInput = "";
-    roundDPlacement = [];
-    roundDUsedKeys = [];
-    updateRoundDDisplay();
-}
-
-function updateRoundDDisplay() {
-    const disp = document.getElementById('spelling-display');
-    const targetWord = currentTTSWord;
-    const isFeedback = STUDY_STATE._roundDFeedback === true;
-    const isSuccess = STUDY_STATE._roundDSuccess === true;
-    const isFrozen = STUDY_STATE._roundDFrozen === true;
-
-    // Keep roundDInput coherent with per-slot placement (slot order).
-    roundDRebuild();
-
-    // Build the row, grouping consecutive LETTER slots into a .word-group so the
-    // word never breaks mid-word (fixed chars like space/'/- stay as their own
-    // flex items BETWEEN groups, so the word wraps only at natural points).
+// Re-render the answer row: given letters, gaps already written, and the one
+// active gap. Consecutive letters are wrapped in .word-group so a word never
+// breaks across lines; separators stay individual flex items (same convention
+// as the scramble round).
+function renderRoundDSlots() {
+    const disp = document.getElementById('handwriting-slots');
+    if (!disp) return;
+    const activeIdx = roundDCursor < roundDGapOrder.length ? roundDGapOrder[roundDCursor] : -1;
     let html = "";
     let groupBuf = "";
     const flushGroup = () => {
         if (groupBuf) { html += `<span class="word-group">${groupBuf}</span>`; groupBuf = ""; }
     };
-    roundDSlots.forEach((slot, fullIdx) => {
+    roundDSlots.forEach((slot, i) => {
         if (slot.type === 'fixed') {
-            flushGroup(); // a separator always ends the current word-run
-            const c = slot.char === ' ' ? ' ' : slot.char;
-            html += `<div class="study-slot border-transparent bg-transparent select-none" style="color:#94a3b8">${c}</div>`;
-        } else {
-            const placedKey = roundDPlacement[fullIdx];
-            const filledChar = (placedKey !== undefined) ? roundDBaseKeys[placedKey] : "";
-            let bg = "bg-gray-800";
-            if (isSuccess) bg = "bg-green-500";
-            else if (isFeedback && filledChar) {
-                bg = (filledChar === targetWord[slot.index]) ? "bg-green-500" : "bg-red-500";
-            }
-            // Click a filled slot to DELETE it (frozen during reveal).
-            const onclick = (filledChar && !isFrozen) ? ` onclick="removeRoundDLetter(${fullIdx})"` : "";
-            groupBuf += `<div class="study-slot ${bg}"${onclick}>${filledChar}</div>`;
+            flushGroup();
+            html += `<div class="study-slot hw-slot-fixed select-none" style="color:#94a3b8">${slot.char}</div>`;
+            return;
         }
+        let cls = "study-slot ";
+        if (!slot.gap) cls += "hw-slot-given";
+        else if (slot.filled) cls += slot.given ? "hw-slot-revealed" : "bg-green-500";
+        else cls += "bg-gray-800" + (i === activeIdx ? " hw-slot-active" : "");
+        const text = (slot.gap && !slot.filled) ? "" : slot.char;
+        groupBuf += `<div class="${cls}">${text}</div>`;
     });
     flushGroup();
     disp.innerHTML = html;
-    disp.className = "flex flex-wrap justify-center gap-[var(--gap-xs)] min-h-[60px] w-full px-4 text-white";
-
-    // Shrink the answer area if a long no-separator word is too wide for the screen.
+    // Shrink the row if a long no-separator word is too wide for the screen.
     if (typeof fitAnswerArea === 'function') fitAnswerArea(disp);
+}
 
-    // Virtual keyboard stays a STATIC palette: all tiles remain visible; a used
-    // tile is flagged (so the player sees what's spent) but never hidden/removed.
-    const kbDiv = document.getElementById('virtual-keyboard');
-    if (kbDiv) {
-        Array.from(kbDiv.children).forEach((btn) => {
-            const ki = Number(btn.dataset.keyIndex);
-            btn.style.visibility = 'visible';
-            if (roundDUsedKeys[ki]) btn.classList.add('used');
-            else btn.classList.remove('used');
-        });
+// Point the trace box at the next gap, or finish the word when none are left.
+function roundDShowTarget() {
+    if (roundDCursor >= roundDGapOrder.length) { roundDWordComplete(); return; }
+    roundDAttempts = 0;
+    roundDGuided = false;
+    roundDTrace.setGuided(false);
+    roundDTrace.setTarget(roundDSlots[roundDGapOrder[roundDCursor]].char);
+    renderRoundDSlots();
+}
+
+function roundDAcceptLetter() {
+    if (STUDY_STATE.isTransitioning) return;
+    const slot = roundDSlots[roundDGapOrder[roundDCursor]];
+    slot.filled = true;
+    slot.given = false;
+    roundDCursor++;
+    synthGem();
+    renderRoundDSlots();
+    setTimeout(() => {
+        if (STUDY_STATE.round === 'D') roundDShowTarget();
+    }, 420);
+}
+
+function roundDRejectLetter() {
+    if (STUDY_STATE.isTransitioning) return;
+    roundDAttempts++;
+    incrementExerciseAttempts();
+    roundDTrace.clearInk();
+    const wrap = roundDTrace.el;
+    wrap.classList.remove('hw-shake');
+    void wrap.offsetWidth;                 // reflow so the animation restarts
+    wrap.classList.add('hw-shake');
+    synthError();
+
+    if (roundDAttempts >= ROUND_D_GIVE_UP_AFTER) {
+        // Dead end: reveal the letter so a child can never get stuck. It is
+        // marked as given, so it reads differently from one they wrote.
+        const slot = roundDSlots[roundDGapOrder[roundDCursor]];
+        slot.filled = true;
+        slot.given = true;
+        roundDCursor++;
+        renderRoundDSlots();
+        setTimeout(() => {
+            if (STUDY_STATE.round === 'D') roundDShowTarget();
+        }, 900);
+        return;
+    }
+    // Second failure on this letter: fade the outline in and loosen the bar.
+    if (!roundDGuided && roundDAttempts >= ROUND_D_GUIDE_AFTER) {
+        roundDGuided = true;
+        roundDTrace.setGuided(true);
     }
 }
 
-function checkRoundD() {
-    if (STUDY_STATE.isTransitioning || STUDY_STATE._roundDFrozen) return;
-    const targetWord = currentTTSWord;
-    const punct = [' ', "'", "-", ".", "?", "!", ","];
-    const targetLetters = targetWord.split('').filter(c => !punct.includes(c)).join('');
-    const allCorrect = (roundDInput === targetLetters);
+function roundDWordComplete() {
+    STUDY_STATE.isTransitioning = true;
+    roundDTrace.freeze();
+    renderRoundDSlots();
+    playHappySound();
+    queueExerciseEvent('handwriting', 'study', roundDWord);
+    setTimeout(() => {
+        STUDY_STATE.currentWordIndex++;
+        startExerciseTracking();
+        STUDY_STATE.isTransitioning = false;
+        nextRoundDWord();
+    }, 1000);
+}
 
-    // Full? input length must equal number of letter slots.
-    let letterSlotCount = roundDSlots.filter(s => s.type === 'letter').length;
-    if (roundDInput.length < letterSlotCount) { synthError(); return; }
-
-    if (allCorrect) {
-        STUDY_STATE._roundDSuccess = true;
-        STUDY_STATE._roundDFeedback = true;
-        STUDY_STATE._roundDFrozen = true;
-        updateRoundDDisplay();
-        STUDY_STATE.isTransitioning = true;
-        playHappySound();
-        queueExerciseEvent('spelling', 'study', targetWord);
-        setTimeout(() => {
-            roundDInput = "";
-            roundDPlacement = [];
-            roundDUsedKeys = [];
-            STUDY_STATE._roundDSuccess = false;
-            STUDY_STATE._roundDFeedback = false;
-            STUDY_STATE._roundDFrozen = false;
-            STUDY_STATE.currentWordIndex++;
-            startExerciseTracking();
-            STUDY_STATE.isTransitioning = false;
-            nextRoundDWord();
-        }, 1000);
-    } else {
-        STUDY_STATE._roundDFeedback = true;
-        STUDY_STATE._roundDFrozen = true; // freeze: no editing during reveal
-        updateRoundDDisplay();
-        synthError();
-        incrementExerciseAttempts();
-        if (STUDY_STATE._roundDResetTimer) clearTimeout(STUDY_STATE._roundDResetTimer);
-        STUDY_STATE._roundDResetTimer = setTimeout(() => {
-            STUDY_STATE._roundDFeedback = false;
-            STUDY_STATE._roundDFrozen = false;
-            roundDInput = "";
-            roundDPlacement = [];
-            roundDUsedKeys = [];
-            updateRoundDDisplay();
-        }, 5000);
-    }
+function clearRoundD() {
+    // Erasing a slip is free — it must not count as a failed attempt.
+    if (STUDY_STATE.isTransitioning || !roundDTrace) return;
+    roundDTrace.clearInk();
 }
 
 function finishRoundD() {
@@ -1265,6 +1200,9 @@ function exitStudyMode() {
         srStudyResults = [];
     }
     STUDY_STATE.active = false; // so the game-mode keydown listener resumes
+    // The trace box registers window resize/orientation listeners, so tear it
+    // down here or they accumulate across study sessions.
+    if (roundDTrace) { roundDTrace.destroy(); roundDTrace = null; }
     document.getElementById('studyModeOverlay').classList.add('hidden');
     goBackFromGameSelection(); // back to the main dashboard (also shows startScreen)
 }
@@ -1272,7 +1210,7 @@ function exitStudyMode() {
 
 // --- Helper UI ---
 const STUDY_ROUNDS = ['A', 'C', 'D', 'E', 'F'];
-const STUDY_ROUND_LABELS = { A: 'Listen', C: 'Scramble', D: 'Spell', E: 'Sentence', F: 'Match' };
+const STUDY_ROUND_LABELS = { A: 'Listen', C: 'Scramble', D: 'Write', E: 'Sentence', F: 'Match' };
 
 function updateStudyUI(title, subtitle) {
     document.getElementById('study-title').innerText = title;
@@ -1350,20 +1288,7 @@ function handleRoundCKeyDown(key) {
     }
 }
 
+// Desktop convenience: Backspace wipes the current letter's strokes.
 function handleRoundDKeyDown(key) {
-    if (key === 'Enter') {
-        checkRoundD();
-    } else if (key === 'Backspace') {
-        deleteRoundDLast();
-    } else if (key.length === 1 && key.match(/[a-z0-9]/i)) {
-        // Only allow typing if the key is in the visible virtual keyboard.
-        const kb = document.getElementById('virtual-keyboard').children;
-        for (let btn of kb) {
-            const ki = Number(btn.dataset.keyIndex);
-            if (btn.innerText.toLowerCase() === key.toLowerCase() && !roundDUsedKeys[ki]) {
-                typeRoundD(ki);
-                break;
-            }
-        }
-    }
+    if (key === 'Backspace') clearRoundD();
 }

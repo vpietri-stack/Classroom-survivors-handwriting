@@ -14,11 +14,11 @@ The **function names are shifted by one round relative to the UI labels**. `star
 |---|---|---|---|
 | "Round A: Word Recognition" | `'A'` | `startRoundA (study_mode.js ~100)` | Listen to TTS, click the matching word |
 | "Round B: Word Scramble" | `'C'` | `startRoundC (study_mode.js ~193)` | Letter bank → slots (depleting bank) |
-| "Round C: Spelling" | `'D'` | `startRoundD (study_mode.js ~470)` | Type from a 10-key random keyboard |
+| "Round C: Handwriting" | `'D'` | `startRoundD (study_mode.js ~470)` | Handwrite up to 6 random gaps on a trace canvas; the other letters are given |
 | "Round D: Sentence Scramble" | `'E'` | `startRoundE (study_mode.js ~724)` | Word tiles → sentence slots (depleting bank) |
 | "Round E1–E3: Sentence Matching" | `'F'` | `startRoundF (study_mode.js ~973)` | Match question tiles to answer slots, 3 sub-rounds |
 
-Progress-bar labels (`STUDY_ROUND_LABELS`, ~1266) are `A:'Listen', C:'Scramble', D:'Spell', E:'Sentence', F:'Match'` — also keyed by the internal names.
+Progress-bar labels (`STUDY_ROUND_LABELS`, ~1266) are `A:'Listen', C:'Scramble', D:'Write', E:'Sentence', F:'Match'` — also keyed by the internal names.
 
 ## Lifecycle
 
@@ -26,7 +26,7 @@ Progress-bar labels (`STUDY_ROUND_LABELS`, ~1266) are `A:'Listen', C:'Scramble',
 flowchart TD
     INIT[initStudyMode<br/>~29: SR-pick 5 words + 5 sentences] --> A["UI Round A — Listen & click<br/>startRoundA ~100"]
     A -->|"finishRoundA ~185"| B["UI Round B — Word Scramble<br/>startRoundC ~193<br/>(depleting bank)"]
-    B -->|"finishRoundC ~464"| C["UI Round C — Spelling<br/>startRoundD ~470<br/>(10-key board)"]
+    B -->|"finishRoundC ~464"| C["UI Round C — Handwriting<br/>startRoundD ~470<br/>(trace canvas, mask verification)"]
     C -->|"finishRoundD ~718"| D["UI Round D — Sentence Scramble<br/>startRoundE ~724<br/>(depleting bank + speech gate)"]
     D -->|"finishRoundE ~719 → startRoundF"| E["UI Round E1–E3 — Sentence Matching<br/>startRoundF ~973"]
     E -->|"subRound > 3 (~981)"| FIN[finishStudySession ~1200]
@@ -52,9 +52,8 @@ Declared at `study_mode.js ~2`; behavior fields are added dynamically by the rou
 | `startTime`, `timerInterval` | Session timing |
 | `isTransitioning` | Blocks ALL input during the 1–1.5s success advance (and the Round F 2s reset) |
 | `srFinalized` | Set in `finishStudySession`/exit so results aren't double-finalized |
-| `_roundCFrozen` / `_roundDFrozen` / `_roundEFrozen` | Per-round freeze during wrong-answer reveal (UI Rounds B / C / D) |
-| `_roundDFeedback`, `_roundDSuccess` | UI Round C reveal coloring flags (read by `updateRoundDDisplay ~613`) |
-| `_roundDResetTimer`, `_roundEResetTimer` | Single 5s reveal-reset timers (UI Rounds C and D) |
+| `_roundCFrozen` / `_roundEFrozen` | Per-round freeze during wrong-answer reveal (UI Rounds B / D) |
+| `roundDSlots`, `roundDGapOrder`, `roundDCursor`, `roundDAttempts`, `roundDGuided`, `roundDTrace` | UI Round C handwriting state: 1:1 slot model, the gap indices, the gap being written, failures on it, whether the outline has faded in, and the trace-box widget |
 | `subRound`, `sentencePairs`, `pairAttempts[]`, `pairQueued[]` | UI Round E matching state |
 
 Module-level globals: `srStudyResults` (per-item `{type, key, firstAttempt}` records, ~16) and `srUsedPairKeys` (pairs already shown in UI Round E this session, ~17).
@@ -73,14 +72,16 @@ Containers: `#scramble-slots` (answer) + `#scramble-bank` (source), built by `ne
 - `checkRoundC (~354)`: incomplete → soft `synthError()` nudge, no reset. Grades every non-fixed slot against `targetWord[i]` (full-string index; fixed slots occupy their own positions). Correct → freeze + `isTransitioning`, SR success push, `queueExerciseEvent('wordScramble','study',word)`, advance after 1s. Wrong → freeze, SR failure recorded **at the first wrong check** (`exerciseAttempts === 1`), `incrementExerciseAttempts()`, and a 5s reset that returns EVERY letter to the bank before unfreezing. Quirk: this widget stores the reset timer **per slot** (`slot._resetTimer`), not on `STUDY_STATE`.
 - `clearRoundC (~438)`: blocked only during the 1s success transition. Clears every slot's `_resetTimer`, returns letters to the bank, unfreezes — **CLEAR must stay live during the reveal**.
 
-### UI Round C — Spelling (`'D'`) — 10-key board
-`nextRoundDWord (~478)`: keyboard = the word's own letters (excluding `[' ',"'",'-','.','?','!',',']`) shuffled-plus-sorted, padded with random letters to exactly **10 keys** (`keys.sort()`). Each `.study-key` carries `dataset.keyIndex`.
+### UI Round C — Handwriting (`'D'`) — write the missing letters
+`nextRoundDWord (~478)`: one slot per character; `hwPickGaps(word, ROUND_D_MAX_GAPS=6)` (handwriting.js) picks up to **6 random letter positions** as gaps the student must handwrite, left-to-right. The remaining letters render as given context (`.hw-slot-given`, dashed border), so a 20-letter item costs the same as a 6-letter one. Separators (`[' ',"'",'-','.','?','!',',']`) render as `.hw-slot-fixed` — no box at all; the kid theme forces a background onto every `.study-slot` with `!important`, so `.hw-slot-fixed` needs its own kid-mode `!important` override or a ghost box appears where the space is.
 
-- State model (the bug-class fix): `roundDPlacement[slotIdx] = keyIndex` + `roundDUsedKeys[keyIndex]` — **per-slot placement decoupled from typing order** (~553). `roundDRebuild (~559)` reconstructs `roundDInput` left-to-right from placement. Two identical letters each own their own tile.
-- `typeRoundD (~563)` fills the earliest empty *letter-slot* (slot order, not typing order); a used tile is refused by its own placement, not by typing position. `deleteRoundDLast (~578)` removes the rightmost placed slot; `removeRoundDLetter (~589)` frees that slot's tile.
-- `updateRoundDDisplay (~613)` re-renders `#spelling-display` with `.word-group` grouping and per-slot green/red during feedback; filled slots are click-to-delete unless frozen. **The keyboard is a STATIC palette**: used tiles get a `.used` class, never removed.
-- `checkRoundD (~669)`: compares `roundDInput` to the word's letters only. Correct → success freeze, `queueExerciseEvent('spelling','study',word)`, 1s advance. Wrong → freeze + feedback, `incrementExerciseAttempts()`, `STUDY_STATE._roundDResetTimer` 5s reset (placement/usedKeys cleared, colors cleared, unfreeze). **Note:** the wrong branch of `checkRoundD` does *not* push an `srStudyResults` failure record (unlike UI Rounds B, D, E) — spelling SR failures are only captured in game mode; verified from code ~700–715.
-- `clearRoundD (~600)`: cancels `_roundDResetTimer`, clears feedback/frozen, empties placement. Blocked only during `isTransitioning`.
+- **Verification, not classification.** The target letter is always known, so the student's ink is compared against a mask rendered from that one glyph in Fredoka (`hwGlyphMask`, 128×128; `hwEnsureFont()` is awaited in `startRoundD` so the mask is never a fallback font's shape). `hwScoreStrokes` returns *precision* (ink inside the dilated guide) and *recall* (guide covered by dilated ink); both must clear the active profile. All maths runs in a fixed 128×128 mask space, so thresholds are independent of canvas size and devicePixelRatio.
+- **Two gotchas the maths has to defend against** (both pinned by `test_handwriting.js`): `hwNormalise` recentres the ink on the guide and rescales to the guide's height with an **asymmetric clamp [0.9, 1.8]** — it enlarges small writing freely but barely shrinks, because shrinking is exactly what turns a big filled-in blob into a passing letter. And the minimum-ink guard reads `rawInkCount` (pre-normalisation), because rescaling enlarges a stray dot well past the guard on its own.
+- Ink accumulates across pen lifts, so multi-stroke letters (`i`, `j`, `t`, `f`, `x`, capitals) need no "done" button — the letter fills in and advances when coverage passes. Either case is accepted (`hwOtherCase`); capitalisation is not this round's battle.
+- **Scaffold ladder** (`roundDRejectLetter`): attempts 1–2 are a blank box at the `free` profile; from attempt 3 the outline fades in (`roundDTrace.setGuided(true)`) at the looser `guided` profile; at attempt 5 (`ROUND_D_GIVE_UP_AFTER`) the letter is revealed as `.hw-slot-revealed` so a child can never dead-end. Erase (`clearRoundD`, or Backspace via `handleRoundDKeyDown`) is free — it does not count as an attempt.
+- Accept → `synthGem`, slot turns `.bg-green-500`, 420ms, next gap. Word complete → `queueExerciseEvent('handwriting','study',word)` and the 1s advance. **Like the old spelling round, this round pushes no `srStudyResults` record** — it affects analytics only, never spaced repetition.
+- `hwCreateTraceBox` owns the canvas and the Pointer Events (`touch-action: none` stops the page scrolling mid-trace) and registers window resize/orientation listeners — `exitStudyMode` destroys the widget or the listeners accumulate across sessions.
+- `HW_PROFILE` thresholds and the guide geometry (`HW_FONT_SCALE`, `HW_BASELINE`) are starting points expected to need classroom tuning. `test_handwriting.js` covers the pure mask maths; `test_handwriting_browser.js` covers real Fredoka pixels, the pointer flow, the scaffold and the dead-end reveal.
 
 ### UI Round D — Sentence Scramble (`'E'`) — **depleting bank + speech gate**
 `nextRoundESentence (~732)`: one `.sentence-slot` per token in `#sentence-drop-zone` (`dataset.expected`), shuffled `.study-word-tile` buttons in `#sentence-word-bank`. Array-wrapped sentence entries are unwrapped (`sentence[0]`).
@@ -110,7 +111,7 @@ Every drill round uses the same loop: **CHECK** → grade → color green/red �
 | Widget | Source | Behavior |
 |---|---|---|
 | UI Round B bank (`#scramble-bank`) | **DEPLETES** | Click bank letter → moves into earliest empty slot, bank tile removed; click placed letter → fresh tile back in bank |
-| UI Round C keyboard (`#virtual-keyboard`) | STATIC palette | Used tiles get `.used`, stay visible; placed letters delete into nothing |
+| UI Round C trace box (`.hw-trace-canvas`) | n/a (ink, not tiles) | Pen strokes accumulate; acceptance is per-letter and immediate, so there is no CHECK button and no whole-word reveal |
 | UI Round D bank (`#sentence-word-bank`) | **DEPLETES** | Tile moves to slot; placed tile returns as a fresh button |
 | UI Round E dock (`#sentence-b-dock`) | STATIC (moves) | Same tile node shuttles dock ↔ slot |
 
@@ -126,14 +127,14 @@ In UI Round B, characters in `[' ', '-', '.', '?', '!']` render as **pinned** sl
 
 ## The `.word-group` DOM convention
 
-Letter slots in the answer rows are wrapped in `.word-group` divs so a word (e.g. `danced`) never breaks across lines; separators sit between groups so wrapping only happens at word boundaries. Consequence: **never index slots via `container.children[i]`** — the direct children are groups. Always use a `.study-slot` descendant query (`roundCSlots()` in production). UI Round C's display is rendered as HTML strings with `<span class="word-group">` (`updateRoundDDisplay ~613`). `fitAnswerArea` (game.js ~1371) shrinks `--answer-font`/`--slot-size` when a long word would overflow narrow phones.
+Letter slots in the answer rows are wrapped in `.word-group` divs so a word (e.g. `danced`) never breaks across lines; separators sit between groups so wrapping only happens at word boundaries. Consequence: **never index slots via `container.children[i]`** — the direct children are groups. Always use a `.study-slot` descendant query (`roundCSlots()` in production). UI Round C's row is rendered as HTML strings with `<span class="word-group">` (`renderRoundDSlots ~560`). `fitAnswerArea` (game.js ~1371) shrinks `--answer-font`/`--slot-size` when a long word would overflow narrow phones.
 
 ## Keyboard support
 
 `study_mode.js` registers one global `keydown` listener (~1311): `if (!STUDY_STATE.active) return;` then routes by `STUDY_STATE.round`:
 
 - Internal `'C'` (UI Round B) → `handleRoundCKeyDown (~1321)`: Backspace removes the last filled letter-slot; letter keys click the first matching bank button; Enter = CHECK.
-- Internal `'D'` (UI Round C) → `handleRoundDKeyDown (~1344)`: Enter = CHECK, Backspace = `deleteRoundDLast`, letter keys type the first matching *unused* keyboard tile.
+- Internal `'D'` (UI Round C) → `handleRoundDKeyDown (~1330)`: Backspace = `clearRoundD` (wipe the current letter's strokes). No letter typing — input is the trace canvas.
 
 ## SR recording rules
 
@@ -185,7 +186,9 @@ flowchart TD
 
 ## Which tests cover this
 
-- `test_widgets_regression.js` — jsdom harness loading the REAL scripts in index.html order; asserts the depleting bank, delete-preserves-gap, and freeze behaviors across the scramble/spelling widgets (includes Round B + game-mode parity).
+- `test_widgets_regression.js` — jsdom harness loading the REAL scripts in index.html order; asserts the depleting bank, delete-preserves-gap, and freeze behaviors across the scramble widgets, plus the handwriting answer row (given/gap/active/revealed slots, invisible separators, ERASE safety).
+- `test_handwriting.js` — pure Node tests of the mask maths in `handwriting.js` (rasterise, dilate, bbox, normalise, score, accept, gap picking) with synthetic rings; no canvas, no browser.
+- `test_handwriting_browser.js` — Playwright + real Chrome: glyph masks read from actual Fredoka pixels, the pointer-driven trace flow, reject → scaffold → accept → reveal, and the 6-gap cap.
 - `test_round_e_dedup.js` — VM test of the UI-Round-E sub-round pair-selection rules (due-first, page preference, no repeats) by loading `sr_engine.js` + `teaching_content.js`.
 
 Both are in the `npm test` chain — see [Testing](12-testing.md). Related live behavior (speech gate) is covered in [Speech Recognition](08-speech.md); historic bug lore in [Gotchas & History](15-gotchas-and-history.md).

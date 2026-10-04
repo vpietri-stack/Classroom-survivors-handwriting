@@ -23,7 +23,7 @@ const order = [
   'translations.js', 'config.js', 'sr_engine.js', 'frontend_auth.js',
   'teaching_content.js', 'content_pu1.js', 'content_pu2.js', 'content_pu3.js',
   'content_think0.js', 'content_think1.js', 'content_think2.js', 'content_test.js',
-  'class_config.js', 'game.js', 'study_mode.js'
+  'class_config.js', 'game.js', 'handwriting.js', 'study_mode.js'
 ];
 
 const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://localhost/' });
@@ -298,109 +298,70 @@ const testBody = `
   ok('G(apos): fixed slots are only space/period/question/exclaim (no comma)',
      scSlots.filter(function(s){ return s.type === 'fixed'; }).every(function(s){ return ['.','?','!',' '].includes(s.char); }));
 
-  // ===== STUDY ROUND C (spelling desync fix — same class as game-mode word scramble) =====
-  // Reproduces the user's report: word "danced" (5 letters d-a-n-c-e), board of
-  // 10 tiles. Typing the two 'd's first must NOT block the 'a' tiles. Old bug
-  // used roundDInput (typing order) as if it were keyed by tile index, so the
-  // 'd's at typing positions 0,1 blocked every tile at index 0,1 (both 'a' tiles).
-  STUDY_STATE.words = ['danced'];
+  // ===== STUDY ROUND C (handwriting) — the answer row =====
+  // The 10-key spelling round is gone, so its desync / back-key / freeze
+  // regressions went with it. What must still hold for the handwriting round is
+  // the answer row: given letters visible, gaps empty, exactly one active gap,
+  // and separators left alone. The trace box needs a 2D canvas, which jsdom does
+  // not provide, so it is covered by test_handwriting.js (pure mask maths) plus
+  // manual testing on a real device.
+  roundDTrace = null;   // never mounted in jsdom; ERASE must cope with that
+  roundDWord = 'swimming pool';
+  STUDY_STATE.words = [roundDWord];
   STUDY_STATE.currentWordIndex = 0;
   STUDY_STATE.isTransitioning = false;
-  STUDY_STATE._roundDFrozen = false;
-  startRoundD(); nextRoundDWord();
-  // Force a deterministic board: sorted letters a,a,c,d,d,e + 4 fillers, so the
-  // two 'a' tiles are at indices 0,1 and a 'd' tile is later. Bypasses shuffle.
-  var kb = document.getElementById('virtual-keyboard');
-  var kbBtns = Array.prototype.slice.call(kb.children);
-  // Build deterministic keys by overwriting the dataset + re-rendering keyboard.
-  roundDBaseKeys = ['a','a','c','d','d','e','b','f','o','t'];
-  roundDInput = ''; roundDPlacement = []; roundDUsedKeys = [];
-  // Clear and re-add buttons in deterministic order.
-  kb.innerHTML = '';
-  roundDBaseKeys.forEach(function(ch, i){
-    var b = document.createElement('button');
-    b.className = 'study-key'; b.innerText = ch; b.dataset.keyIndex = i;
-    b.onclick = (function(ki){ return function(){ typeRoundD(ki); }; })(i);
-    kb.appendChild(b);
+  roundDSlots = roundDWord.split('').map(function (ch) {
+    return HW_PUNCT.indexOf(ch) === -1
+      ? { type: 'letter', char: ch, gap: false, filled: false, given: false }
+      : { type: 'fixed', char: ch };
   });
-  // Round D groups letter slots into .word-group wrappers (so a word never
-  // breaks mid-word); flatten to the .study-slot descendants for assertions.
-  function cSlots() {
-    return Array.prototype.slice.call(document.querySelectorAll('#spelling-display .study-slot'));
+  // 0:s 1:w 2:i 3:m 4:m 5:i 6:n 7:g 8:' ' 9:p 10:o 11:o 12:l
+  roundDGapOrder = [2, 5, 7, 10];
+  roundDGapOrder.forEach(function (i) { roundDSlots[i].gap = true; });
+  roundDCursor = 0;
+  document.getElementById('study-game-area').innerHTML = '<div id="handwriting-slots"></div>';
+  renderRoundDSlots();
+
+  function hwSlots() {
+    return Array.prototype.slice.call(document.querySelectorAll('#handwriting-slots .study-slot'));
   }
-  kbBtns = Array.prototype.slice.call(kb.children);
-  ok('C: board rendered 10 keys', kbBtns.length === 10);
-  // Type the two 'd' tiles first (indices 3 and 4).
-  kbBtns.find(function(b){ return b.dataset.keyIndex === '3'; }).click();
-  kbBtns.find(function(b){ return b.dataset.keyIndex === '4'; }).click();
-  ok('C: typing two d tiles fills first two letter slots', (function(){
-    var dis = cSlots().map(function(s){return s.textContent;}).join('');
-    return dis.indexOf('d') === 0 && dis[1] === 'd';
+  ok('HW: every character of the word gets a slot', hwSlots().length === roundDWord.length);
+  ok('HW: a given letter is already visible and styled as given',
+     hwSlots()[0].textContent === 's' && hwSlots()[0].classList.contains('hw-slot-given'));
+  ok('HW: a gap renders empty', hwSlots()[2].textContent === '');
+  ok('HW: exactly one gap is the active target', (function () {
+    var active = hwSlots().filter(function (s) { return s.classList.contains('hw-slot-active'); });
+    return active.length === 1 && hwSlots()[2].classList.contains('hw-slot-active');
   })());
-  // The 'a' tiles (index 0,1) must now be selectable (the old bug blocked them).
-  var a0 = kbBtns.find(function(b){ return b.dataset.keyIndex === '0'; });
-  a0.click();
-  ok('C: an a tile is selectable after two d tiles (no desync)', (function(){
-    var dis = cSlots().map(function(s){return s.textContent;}).join('');
-    return dis.indexOf('a') !== -1;
-  })());
-  // Fill the rest via typing: d-a-n-c-e (we have a0 placed; add a1,c, then d,e fill remaining).
-  kbBtns.find(function(b){ return b.dataset.keyIndex === '1'; }).click(); // a
-  kbBtns.find(function(b){ return b.dataset.keyIndex === '2'; }).click(); // c
-  // remaining two letter slots get the two d tiles already used; need 'n' and 'e'
-  // but board has no 'n' (filler only). Use handleRoundDKeyDown to type 'n'/'e' if allowed.
-  // Instead, verify the full word can be completed by clicking available keys:
-  // we already used d(3),d(4),a(0),a(1),c(2); remaining slots need n,e -> not on board,
-  // so just assert the desync fix: a-tile selectable. (Full correct spelled by real board.)
-  ok('C: clicking a placed slot deletes it without losing other tiles', (function(){
-    // place one a, then delete it via slot click, board stays intact
-    var before = document.querySelectorAll('#virtual-keyboard .study-key').length;
-    var slots = cSlots();
-    // find a filled slot and click it
-    for (var si=0; si<slots.length; si++){ if (slots[si].textContent){ slots[si].click(); break; } }
-    return document.querySelectorAll('#virtual-keyboard .study-key').length === before;
+  ok('HW: the space between two words stays a fixed separator',
+     roundDSlots[8].type === 'fixed' && hwSlots()[8].textContent === ' ');
+  // Regression: without this class the kid theme's !important slot background
+  // paints a visible box where the space is.
+  ok('HW: separators carry hw-slot-fixed so no theme can box them',
+     hwSlots()[8].classList.contains('hw-slot-fixed'));
+
+  // A letter the student wrote fills its gap and the active ring moves on.
+  roundDSlots[2].filled = true;
+  roundDCursor = 1;
+  renderRoundDSlots();
+  ok('HW: a written letter fills its gap green',
+     hwSlots()[2].textContent === 'i' && hwSlots()[2].classList.contains('bg-green-500'));
+  ok('HW: the active ring moves to the next gap', hwSlots()[5].classList.contains('hw-slot-active'));
+
+  // A letter revealed after the student ran out of attempts must read differently
+  // from one they wrote themselves.
+  roundDSlots[7].filled = true;
+  roundDSlots[7].given = true;
+  renderRoundDSlots();
+  ok('HW: a revealed letter is not styled as one they wrote', (function () {
+    return hwSlots()[7].classList.contains('hw-slot-revealed') &&
+           !hwSlots()[7].classList.contains('bg-green-500');
   })());
 
-  // ===== STUDY ROUND C back-key (delete last placed letter) =====
-  STUDY_STATE.words = ['tap'];
-  STUDY_STATE.currentWordIndex = 0;
-  startRoundD(); nextRoundDWord();
-  var kbC = Array.prototype.slice.call(document.getElementById('virtual-keyboard').querySelectorAll('button'));
-  // Force a deterministic board: a,a,t,p...
-  roundDBaseKeys = ['a','a','t','p','b','f','o','x','w','z'];
-  roundDPlacement = []; roundDUsedKeys = []; updateRoundDDisplay();
-  // Place 't' then 'a' (slots 0,1).
-  var tBtn = kbC.find(function(b){ return b.dataset.keyIndex === '2'; }); // 't'
-  var aBtn = kbC.find(function(b){ return b.dataset.keyIndex === '0'; }); // 'a'
-  tBtn.click(); aBtn.click();
-  ok('C(back): two letters placed', (function(){
-    var dis = cSlots().map(function(s){return s.textContent;}).join('');
-    return dis.indexOf('t') === 0 && dis[1] === 'a';
-  })());
-  // Press Backspace via the keyboard handler -> removes the LAST placed ('a').
-  handleRoundDKeyDown('Backspace');
-  ok('C(back): Backspace removes last placed letter', (function(){
-    var slots = cSlots();
-    return slots[0].textContent === 't' && slots[1].textContent === '';
-  })());
-  ok('C(back): freed tile is selectable again', roundDUsedKeys[0] === false);
+  var hwEraseThrew = null;
+  try { handleRoundDKeyDown('Backspace'); clearRoundD(); } catch (e) { hwEraseThrew = e; }
+  ok('HW: ERASE and Backspace are safe with no trace box mounted', hwEraseThrew === null);
 
-  // ===== STUDY ROUND C: CLEAR works during wrong-answer freeze =====
-  STUDY_STATE.words = ['tap'];
-  STUDY_STATE.currentWordIndex = 0;
-  startRoundD(); nextRoundDWord();
-  // Force deterministic board and place a WRONG-but-full word 'aatp' (wrong order) to freeze.
-  roundDBaseKeys = ['a','a','t','p','b','f','o','x','w','z'];
-  roundDPlacement = []; roundDUsedKeys = []; updateRoundDDisplay();
-  var kbC2 = Array.prototype.slice.call(document.getElementById('virtual-keyboard').querySelectorAll('button'));
-  // Fill all 3 letter slots with 'a','a','t' (wrong word) so a check reveals+wfreezes.
-  kbC2.find(function(b){ return b.dataset.keyIndex==='0'; }).click();
-  kbC2.find(function(b){ return b.dataset.keyIndex==='1'; }).click();
-  kbC2.find(function(b){ return b.dataset.keyIndex==='2'; }).click();
-  checkRoundD();
-  ok('C(freeze): frozen after wrong CHECK', STUDY_STATE._roundDFrozen === true);
-  clearRoundD();
-  ok('C(freeze): CLEAR works while frozen (unfreezes)', STUDY_STATE._roundDFrozen === false && roundDPlacement.length === 0);
   // ===== GRAMMAR (sentence scramble) must NOT throw on empty SR result =====
   // Reproduces the freeze: getGameItemSR can return [] (empty spaced-rep pool).
   // Old code did primarySentence = rawEntry[0] (=undefined) -> .split(' ') -> throw,

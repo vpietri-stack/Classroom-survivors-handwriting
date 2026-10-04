@@ -4,7 +4,7 @@
   "description": "",
   "main": "admin_dashboard.js",
   "scripts": {
-    "test": "node test_deploy_stamp_sync.js && node test_widgets_regression.js && node test_sr_once_per_session.js && node test_round_e_dedup.js && node test_session_flush_deadline.js && node test_auto_archive_analytics.js && node test_archive_merge_dashboard.js && node test_speech_hygiene.js && node test_td_gate.js && node test_td_core.js && node test_asset_manifest.js && node test_geo_events.js && node test_geo_capture.js && node test_geo_export.js && node test_geo_map.js && node test_dashboard_security.js",
+    "test": "node test_deploy_stamp_sync.js && node test_widgets_regression.js && node test_handwriting.js && node test_handwriting_browser.js && node test_sr_once_per_session.js && node test_round_e_dedup.js && node test_session_flush_deadline.js && node test_auto_archive_analytics.js && node test_archive_merge_dashboard.js && node test_speech_hygiene.js && node test_td_gate.js && node test_td_core.js && node test_asset_manifest.js && node test_geo_events.js && node test_geo_capture.js && node test_geo_export.js && node test_geo_map.js && node test_dashboard_security.js",
     "test:td": "node test_td_gate.js && node test_td_core.js"
   },
   "repository": {
