@@ -106,23 +106,29 @@ ok(blob.precision < 0.5, 'score: a blob fails on precision, not recall (p=' + bl
 const tap = score([[{ x: 64, y: 40 }]], GUIDE, true);
 ok(!HW.hwAccept(tap, HW.HW_PROFILE.free) && tap.rawInkCount < HW.HW_MIN_INK,
   'score: a single tap is rejected by the minimum-ink guard');
-// Regression: rescaling to the guide's height enlarges a dot well past the guard
-// on its own, so the guard has to read the ink the student actually drew.
-ok(tap.inkCount >= HW.HW_MIN_INK,
-  'guard: min-ink is judged on raw ink, not the enlarged copy (raw=' + tap.rawInkCount +
-  ', normalised=' + tap.inkCount + ')');
+// The guard reads the ink the student actually drew; normalisation is allowed to
+// rescale it, so the guarded quantity must be the pre-normalisation count.
+ok(tap.rawInkCount < HW.HW_MIN_INK && tap.inkCount > 0,
+  'guard: min-ink is judged on raw ink (' + tap.rawInkCount + ' px), not the rescaled copy (' +
+  tap.inkCount + ' px)');
 
 // ---------------------------------------------------------------------------
-// normalisation: the "writes small and off to one side" case
+// normalisation: position is forgiven, size only within ~10%
 // ---------------------------------------------------------------------------
+// Horizontal placement must not matter...
+const offCentre = ringStroke(40, 64, 29, 90);
+ok(HW.hwAccept(score(offCentre, GUIDE, true), HW.HW_PROFILE.free),
+  'normalise: a correctly-sized ring written off to one side still passes');
+
+// ...but size is part of handwriting, and vertical stretching is what used to
+// hide missing dots and crossbars, so the scale clamp is deliberately narrow.
 const smallStrokes = ringStroke(34, 88, 18, 90);
 const smallRaw = score(smallStrokes, GUIDE, false);
 const smallNorm = score(smallStrokes, GUIDE, true);
 ok(!HW.hwAccept(smallRaw, HW.HW_PROFILE.free),
   'normalise: a small off-centre ring fails when scored as-is (r=' + smallRaw.recall.toFixed(2) + ')');
-ok(HW.hwAccept(smallNorm, HW.HW_PROFILE.free),
-  'normalise: the same ring passes once rescaled onto the guide (p=' + smallNorm.precision.toFixed(2) +
-  ' r=' + smallNorm.recall.toFixed(2) + ')');
+ok(!HW.hwAccept(smallNorm, HW.HW_PROFILE.free),
+  'normalise: a half-size ring is refused rather than stretched onto the guide');
 
 const huge = score(ringStroke(64, 64, 58, 90), GUIDE, true);
 ok(!HW.hwAccept(huge, HW.HW_PROFILE.free),

@@ -16,6 +16,16 @@
     var words = (params.get('hw') || 'cat, swim, happy, swimming pool, angry - angrier than')
         .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
+    // Live strictness knobs, so thresholds can be tuned against real handwriting
+    // without a redeploy: ?prec=0.6&recall=0.8&miss=0.1 (free stage) and
+    // ?gprec=&grecall= (outline stage). The panel shows the current bars.
+    var freeBars = HW_PROFILE.free, guidedBars = HW_PROFILE.guided;
+    if (params.get('prec')) freeBars.precision = +params.get('prec');
+    if (params.get('recall')) freeBars.recall = +params.get('recall');
+    if (params.get('miss')) freeBars.maxMissing = +params.get('miss');
+    if (params.get('gprec')) guidedBars.precision = +params.get('gprec');
+    if (params.get('grecall')) guidedBars.recall = +params.get('grecall');
+
     function panel(list) {
         var old = document.getElementById('hw-dev-panel');
         if (old) old.remove();
@@ -37,12 +47,29 @@
         var hint = document.createElement('span');
         hint.textContent = 'restarts the round with what you typed';
         hint.style.cssText = 'color:#9ca3af';
-        box.appendChild(input); box.appendChild(btn); box.appendChild(hint);
+        var readout = document.createElement('span');
+        readout.id = 'hw-dev-last';
+        readout.style.cssText = 'width:100%;color:#93c5fd';
+        box.appendChild(input); box.appendChild(btn); box.appendChild(hint); box.appendChild(readout);
         document.body.appendChild(box);
         btn.onclick = function () {
             var next = input.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
             if (next.length) launch(next);
         };
+        setInterval(function () {
+            var l = window.__hwLast;
+            if (!l) {
+                readout.textContent = 'bars: cover>=' + freeBars.precision + ' fill>=' + freeBars.recall +
+                    ' missing<=' + freeBars.maxMissing + '  |  write a letter to see its scores';
+                return;
+            }
+            readout.textContent = 'target "' + l.target + '"' + (l.guided ? ' (outline)' : '') + ' -> ' +
+                (l.accepted ? 'ACCEPTED' : (l.judged ? 'REJECTED' : 'not a letter yet')) +
+                ' | cover ' + l.precision + ' fill ' + l.recall + ' missing ' + l.missing +
+                ' | strokes ' + l.strokes + '/' + l.minStrokes + ' width ' + l.width + ' height ' + l.height +
+                (l.overfilled ? ' OVERFILLED' : '') +
+                ' | bars: cover>=' + l.bars.precision + ' fill>=' + l.bars.recall + ' missing<=' + l.bars.maxMissing;
+        }, 250);
     }
 
     function launch(list) {

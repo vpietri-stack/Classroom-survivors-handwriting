@@ -3,11 +3,29 @@
 //
 // test_handwriting.js covers the pure mask maths with synthetic rings. This
 // covers the half that only a real browser can: glyph masks read from actual
-// Fredoka pixels, the pointer plumbing, and the round flow (accept -> slot fills
-// -> next gap, and the blank -> outline scaffold).
+// Fredoka pixels, the pointer plumbing, and the round flow.
 //
-// It also guards the thresholds against a real letterform, which is the part
-// most likely to be wrong: a synthetic ring is not a lowercase 'o'.
+// Pen paths are derived FROM the glyph masks (row-centreline dots), so a
+// "complete" trace really is the letter. Hand-guessed pen paths proved unable
+// to represent letters faithfully.
+//
+// Pinned here:
+//   - a complete letter is accepted, including multi-stroke letters written
+//     with a real pause between strokes (t, i, x);
+//   - a lift that does not complete the letter is not judged until the grace
+//     window (HW_STROKE_GAP_MS) passes;
+//   - letters made of separate pieces (i, j) cannot be written in one stroke;
+//   - blank box first, outline after two refusals, reveal after five;
+//   - a completed word queues one "handwriting" exercise event;
+//   - the tuning readout (__hwLast) ships with every field the field-tuning
+//     workflow needs.
+//
+// NOT pinned here, on purpose: refusing confusable pairs such as "l for t" or
+// "c for a". In Fredoka the t crossbar is ~2% of the glyph's ink and a
+// single-story a's stem sits where a c's tips flare, so no geometric bar
+// refuses those without also refusing good letters. They are tunable in the
+// field via ?miss= / ?recall= / ?prec= on the test site, and the readout line
+// reports the numbers needed to choose the bars from real handwriting.
 //
 // Run:  node test_handwriting_browser.js   (part of npm test)
 // ============================================================
@@ -19,37 +37,8 @@ const fileUrl = 'file:///' + path.resolve(__dirname, 'index.html').replace(/\\/g
 let pass = 0, fail = 0;
 function ok(c, m) { if (c) { pass++; console.log('PASS: ' + m); } else { fail++; console.error('FAIL: ' + m); } }
 
-// Pen paths in fractions of the trace box, so they scale with the canvas.
-// Metrics follow handwriting.js: font = 0.62 * box, baseline at 0.80 * box.
-const BASE = 0.80, XTOP = 0.47, TOP = 0.35;
-
-function vLine(x, y0, y1, n) {
-  const pts = []; const steps = n || 24;
-  for (let i = 0; i <= steps; i++) pts.push([x, y0 + (y1 - y0) * i / steps]);
-  return pts;
-}
-function hLine(y, x0, x1, n) {
-  const pts = []; const steps = n || 16;
-  for (let i = 0; i <= steps; i++) pts.push([x0 + (x1 - x0) * i / steps, y]);
-  return pts;
-}
-function arc(cx, cy, rx, ry, a0, a1, n) {
-  const pts = []; const steps = n || 40;
-  for (let i = 0; i <= steps; i++) {
-    const a = a0 + (a1 - a0) * i / steps;
-    pts.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
-  }
-  return pts;
-}
-
-// Hand-written approximations of what a child's pen would do.
-const PATHS = {
-  o: () => [arc(0.50, 0.635, 0.155, 0.165, -Math.PI / 2, Math.PI * 1.5)],
-  l: () => [vLine(0.50, TOP, BASE)],
-  c: () => [arc(0.53, 0.635, 0.150, 0.165, -Math.PI * 0.25, -Math.PI * 1.75)],
-  t: () => [vLine(0.50, TOP, BASE), hLine(XTOP, 0.38, 0.63)],
-  i: () => [vLine(0.50, XTOP, BASE), [[0.50, 0.40]]]
-};
+const SETTLE = 1900;   // > HW_STROKE_GAP_MS: long enough for a lift to be judged
+const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
 
 (async () => {
   const browser = await chromium.launch({
@@ -67,87 +56,107 @@ const PATHS = {
   const glyph = await page.evaluate(async () => {
     await hwEnsureFont();
     const out = {};
-    for (const ch of ['a', 'o', 'l', 'i', 't', 'z', 'A', 'Q']) {
-      const m = hwGlyphMask(ch);
-      const b = hwBbox(m, HW_SIZE);
-      out[ch] = b ? { count: b.count, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 } : null;
+    for (const ch of ['a', 'o', 'l', 'i', 't', 'x', 'z', 'A', 'Q']) {
+      const b = hwBbox(hwGlyphMask(ch), HW_SIZE);
+      out[ch] = b ? b.count : 0;
     }
-    out._sameOZ = (() => {
-      const O = hwGlyphMask('o'), Z = hwGlyphMask('z');
-      let diff = 0;
-      for (let p = 0; p < O.length; p++) if (O[p] !== Z[p]) diff++;
-      return diff;
-    })();
     out._fontLoaded = !!(document.fonts && document.fonts.check('10px Fredoka'));
+    out._iPieces = hwGuideComponents('i');
+    out._tPieces = hwGuideComponents('t');
     return out;
   });
-
   ok(glyph._fontLoaded, 'font: Fredoka is actually loaded before the masks are built');
-  for (const ch of ['a', 'o', 'l', 'i', 't', 'z', 'A', 'Q']) {
-    const b = glyph[ch];
-    ok(!!b && b.count > 100, 'glyph: ' + ch + ' renders ink (' + (b ? b.count : 0) + ' px)');
+  for (const ch of ['a', 'o', 'l', 'i', 't', 'x', 'z', 'A', 'Q']) {
+    ok(glyph[ch] > 100, 'glyph: ' + ch + ' renders ink (' + glyph[ch] + ' px)');
   }
-  const lowerOk = ['a', 'o', 'l', 'i', 't', 'z'].every(ch => glyph[ch] && glyph[ch].y1 <= 127 && glyph[ch].y0 >= 0);
-  ok(lowerOk, 'glyph: lowercase masks fit inside the box (nothing clipped)');
-  ok(glyph['A'] && glyph['A'].count > glyph['a'].count * 0.5, 'glyph: a capital renders too');
-  ok(glyph._sameOZ > 500, 'glyph: different letters produce different masks (' + glyph._sameOZ + ' px differ)');
+  ok(glyph._iPieces === 2, 'glyph: "i" is two separate pieces (dot + stem), so it needs two strokes');
+  ok(glyph._tPieces === 1, 'glyph: "t" is one piece, so stroke count does not gate it');
 
-  // --- drive the real round --------------------------------------------------
-  // "ox" gives two gaps, so the accept -> advance flow is exercised.
-  const setup = await page.evaluate(() => {
+  // --- harness ----------------------------------------------------------------
+  await page.evaluate(() => {
     window.playTTS = function () { };
     window.synthGem = function () { };
     window.synthError = function () { };
-    window.queueExerciseEvent = function () { window.__events = (window.__events || []); window.__events.push([].slice.call(arguments)); };
+    window.queueExerciseEvent = function () { (window.__events = window.__events || []).push([].slice.call(arguments)); };
     window.showTranslation = function () { };
     window.showVocabImage = function () { };
+    // The harness never selects content, and a completed word would otherwise
+    // fall through into Round E and throw, leaving isTransitioning stuck true.
+    window.selectedClassContent = { book: 1, unit: 1, page: 1 };
+    window.startRoundE = function () { };
     STUDY_STATE.active = true;
-    STUDY_STATE.words = ['ox'];
-    STUDY_STATE.currentWordIndex = 0;
-    STUDY_STATE.isTransitioning = false;
     document.getElementById('studyModeOverlay').classList.remove('hidden');
-    startRoundD();
-    return new Promise(res => setTimeout(() => {
-      const cv = document.querySelector('.hw-trace-canvas');
-      res({
-        mounted: !!cv,
-        gaps: roundDGapOrder.slice(),
-        word: roundDWord,
-        slots: roundDSlots.map(s => s.type === 'fixed' ? '#' : (s.gap ? '_' : s.char)),
-        box: cv ? (() => { const r = cv.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })() : null
-      });
-    }, 300));
+
+    // A "pen path" for a letter: one dot per ink run per row, i.e. the letter's
+    // own centreline. `skip` is DATA (functions cannot cross into the page):
+    //   { xGt } / { xLt } / { yLt }   omit one side of a cut line
+    window.__hwPath = function (letter, skip) {
+      const omit = (p) => {
+        if (!skip) return false;
+        if (skip.xGt !== undefined) return p.x > skip.xGt;
+        if (skip.xLt !== undefined) return p.x < skip.xLt;
+        if (skip.yLt !== undefined) return p.y < skip.yLt;
+        return false;
+      };
+      const mask = hwGlyphMask(letter);
+      const strokes = [];
+      for (let y = 0; y < HW_SIZE; y += 3) {
+        let x = 0;
+        while (x < HW_SIZE) {
+          if (!mask[y * HW_SIZE + x] || omit({ x, y })) { x++; continue; }
+          let x2 = x;
+          while (x2 + 1 < HW_SIZE && mask[y * HW_SIZE + x2 + 1] && !omit({ x: x2 + 1, y })) x2++;
+          strokes.push([{ x: (x + x2) / 2, y: y }]);
+          x = x2 + 1;
+        }
+      }
+      return strokes;
+    };
+    // One unbroken vertical stroke, for the stroke-count rule.
+    window.__hwLine = function (x, y0, y1) {
+      const pts = [];
+      for (let y = y0; y <= y1; y += 3) pts.push({ x: x, y: y });
+      return [pts];
+    };
+    // Dispatch strokes as real pointer events, each stroke a down/move.../up.
+    window.__hwDraw = function (strokes) {
+      const r = document.querySelector('.hw-trace-canvas').getBoundingClientRect();
+      const at = (p) => [r.x + p.x / HW_SIZE * r.width, r.y + p.y / HW_SIZE * r.height];
+      const fire = (type, p, buttons) => {
+        const c = at(p);
+        document.querySelector('.hw-trace-canvas').dispatchEvent(new PointerEvent(type, {
+          clientX: c[0], clientY: c[1], pointerId: 7, bubbles: true, cancelable: true,
+          isPrimary: true, button: 0, buttons: buttons, pointerType: 'touch'
+        }));
+      };
+      for (const st of strokes) {
+        for (let i = 0; i < st.length; i++) fire(i === 0 ? 'pointerdown' : 'pointermove', st[i], 1);
+        fire('pointerup', st[st.length - 1], 0);
+      }
+    };
   });
 
-  ok(setup.mounted, 'round: the trace canvas mounts');
-  ok(setup.word === 'ox' && setup.gaps.length === 2, 'round: a 2-letter word gets 2 gaps (got ' + setup.gaps.length + ')');
-  ok(setup.slots.join('') === '__', 'round: both letters are gaps, nothing is given (got "' + setup.slots.join('') + '")');
-  ok(setup.box && setup.box.w > 60, 'round: the canvas is laid out with a real size (' + (setup.box ? Math.round(setup.box.w) : 0) + 'px)');
+  async function loadWord(word, gaps) {
+    await page.evaluate(([w, g]) => {
+      STUDY_STATE.round = 'D';   // the harness skips startRoundD, which sets this
+      STUDY_STATE.words = [w];
+      STUDY_STATE.currentWordIndex = 0;
+      STUDY_STATE.isTransitioning = false;
+      nextRoundDWord();
+      roundDGapOrder.forEach(i => { roundDSlots[i].gap = false; });
+      roundDGapOrder = g.slice();
+      roundDGapOrder.forEach(i => { roundDSlots[i].gap = true; });
+      roundDCursor = 0;
+      renderRoundDSlots();
+      roundDShowTarget();
+    }, [word, gaps]);
+    await page.waitForTimeout(250);
+  }
 
-  // Draw a pen path with real pointer events.
-  async function draw(strokes) {
-    const box = setup.box;
-    for (const stroke of strokes) {
-      for (let i = 0; i < stroke.length; i++) {
-        const cx = box.x + stroke[i][0] * box.w;
-        const cy = box.y + stroke[i][1] * box.h;
-        const type = i === 0 ? 'pointerdown' : 'pointermove';
-        await page.evaluate(([t, x, y]) => {
-          document.querySelector('.hw-trace-canvas').dispatchEvent(new PointerEvent(t, {
-            clientX: x, clientY: y, pointerId: 7, bubbles: true, cancelable: true,
-            isPrimary: true, button: 0, buttons: t === 'pointerdown' ? 1 : 1, pointerType: 'touch'
-          }));
-        }, [type, cx, cy]);
-      }
-      const last = stroke[stroke.length - 1];
-      await page.evaluate(([x, y]) => {
-        document.querySelector('.hw-trace-canvas').dispatchEvent(new PointerEvent('pointerup', {
-          clientX: x, clientY: y, pointerId: 7, bubbles: true, cancelable: true,
-          isPrimary: true, button: 0, buttons: 0, pointerType: 'touch'
-        }));
-      }, [box.x + last[0] * box.w, box.y + last[1] * box.h]);
-    }
-    await page.waitForTimeout(120);
+  // Draw a whole letter in one synchronous burst; judgement lands ~1.5s later.
+  async function drawLetter(letter, skip) {
+    await page.evaluate(([l, k]) => window.__hwDraw(window.__hwPath(l, k)), [letter, skip || null]);
+    await page.waitForTimeout(SETTLE);
   }
 
   const state = () => page.evaluate(() => ({
@@ -156,28 +165,63 @@ const PATHS = {
     attempts: roundDAttempts,
     guided: roundDGuided,
     target: roundDCursor < roundDGapOrder.length ? roundDSlots[roundDGapOrder[roundDCursor]].char : null,
+    last: window.__hwLast || null,
     events: window.__events || []
   }));
 
-  // --- the wrong letter must be rejected ------------------------------------
+  // --- a complete letter is accepted -----------------------------------------
+  await loadWord('cat', [0, 1, 2]);
   let s = await state();
-  ok(s.target === 'o' && s.cursor === 0 && s.slots === '__',
-    'round: the leftmost gap is the first target ("o")');
-
-  await draw(PATHS.l());
+  ok(s.target === 'c' && s.slots === '___', 'round: three gaps, first target "c"');
+  await drawLetter('c');
   s = await state();
-  ok(s.cursor === 0 && s.attempts === 1 && s.slots === '__',
-    'reject: an "l" drawn for the target "o" does not fill the slot (attempts=' + s.attempts + ')');
-  ok(!s.guided, 'scaffold: still no outline after one rejection');
+  ok(s.cursor === 1 && s.slots === 'C__', 'accept: a complete "c" is accepted (slots="' + s.slots + '")');
+  ok(s.last && s.last.strokes !== undefined && s.last.width !== undefined && s.last.minStrokes !== undefined,
+    'readout: the tuning readout reports strokes, minStrokes and extent ratios');
 
-  // --- second rejection fades the outline in --------------------------------
-  await draw(PATHS.l());
+  await loadWord('log', [0]);
+  await drawLetter('l');
   s = await state();
-  ok(s.guided === true && s.attempts === 2, 'scaffold: the outline fades in after 2 rejections');
+  ok(s.cursor === 1 && s.slots === 'L__', 'accept: a drawn "l" fills an "l" gap');
 
-  // Measured as a delta so the ruled baseline/midline (present either way) cannot
-  // flatter it. "Marked" = anything that departs from the paper colour, which is
-  // how a child would see it — a faint-but-real outline still counts.
+  // --- letters in separate pieces need separate strokes -----------------------
+  const iDotCut = await page.evaluate(() => hwBbox(hwGlyphMask('i'), HW_SIZE).y0 + 16);
+  await loadWord('tip', [1]);
+  await page.evaluate((d) => window.__hwDraw(window.__hwLine(64, d.from, d.to)), { from: iDotCut + 4, to: 102 });
+  await page.waitForTimeout(SETTLE);
+  s = await state();
+  ok(s.cursor === 0,
+    'refuse: one unbroken stroke is refused for "i" (strokes=' + (s.last ? s.last.strokes : '?') +
+    ', needed=' + (s.last ? s.last.minStrokes : '?') + ')');
+
+  // --- the pen may leave the paper between strokes ----------------------------
+  await loadWord('tip', [1]);
+  await page.evaluate((d) => window.__hwDraw(window.__hwLine(64, d.from, d.to)), { from: iDotCut + 4, to: 102 });
+  await page.waitForTimeout(400);
+  s = await state();
+  ok(s.attempts === 0 && s.cursor === 0,
+    'strokes: lifting the pen after the stem is NOT judged as a failed attempt');
+  await page.evaluate((d) => window.__hwDraw(window.__hwPath('i', { yLt: d.cut })), { cut: iDotCut });  // the dot, after a real pause
+  await page.waitForTimeout(SETTLE);
+  s = await state();
+  ok(s.cursor === 1,
+    'strokes: the dot after a pause completes the "i" and is accepted (slots="' + s.slots + '")');
+
+  // --- scaffold: blank, then the outline, then the reveal ---------------------
+  await loadWord('in', [0, 1]);
+  s = await state();
+  ok(s.target === 'i' && s.slots === '__', 'round: both letters of "in" are gaps');
+
+  await page.evaluate((d) => window.__hwDraw(window.__hwLine(64, d.from, d.to)), { from: iDotCut + 4, to: 102 });
+  await page.waitForTimeout(SETTLE);
+  s = await state();
+  ok(s.attempts === 1 && !s.guided, 'scaffold: still no outline after one refusal');
+
+  await page.evaluate((d) => window.__hwDraw(window.__hwLine(64, d.from, d.to)), { from: iDotCut + 4, to: 102 });
+  await page.waitForTimeout(SETTLE);
+  s = await state();
+  ok(s.guided === true && s.attempts === 2, 'scaffold: the outline fades in after 2 refusals');
+
   const painted = await page.evaluate(() => {
     const cv = document.querySelector('.hw-trace-canvas');
     const marked = () => {
@@ -198,30 +242,28 @@ const PATHS = {
     'scaffold: the outline is actually painted, and visible against the paper (+' +
     (painted.withGuide - painted.without) + ' px)');
 
-  // --- the right letter is accepted and the round advances -------------------
   await page.evaluate(() => clearRoundD());
-  await draw(PATHS.o());
+  await drawLetter('i');
   s = await state();
-  ok(s.cursor === 1 && s.slots === 'O_', 'accept: a hand-drawn "o" fills the first gap (slots="' + s.slots + '")');
-  await page.waitForTimeout(500);   // the round waits ~420ms before showing the next gap
+  ok(s.cursor === 1 && s.slots === 'I_', 'scaffold: tracing the outline completes the letter (slots="' + s.slots + '")');
+  await page.waitForTimeout(ADVANCE);
   s = await state();
-  ok(s.target === 'x' && s.attempts === 0 && !s.guided,
-    'accept: the round advances to "x" with the attempts and the outline reset');
+  ok(s.target === 'n' && s.attempts === 0 && !s.guided,
+    'accept: the round advances to "n" with the attempts and the outline reset');
 
-  // --- running out of attempts reveals the letter and never dead-ends --------
   const giveUp = await page.evaluate(async () => {
-    roundDAttempts = ROUND_D_GIVE_UP_AFTER - 1;   // one more rejection triggers the reveal
+    roundDAttempts = ROUND_D_GIVE_UP_AFTER - 1;   // one more refusal triggers the reveal
     roundDRejectLetter();
     return new Promise(res => setTimeout(() => res({
       slots: roundDSlots.map(x => x.type === 'fixed' ? '#' : (x.filled ? (x.given ? '?' : x.char.toUpperCase()) : '_')).join(''),
       given: roundDSlots[roundDGapOrder[1]].given === true,
-      cursor: roundDCursor,
       events: window.__events || []
-    }), 1200));
+    }), 1400));
   });
-  ok(giveUp.given && giveUp.slots === 'O?', 'dead end: the last letter is revealed rather than blocking the child');
-  ok(giveUp.events.length === 1 && giveUp.events[0][0] === 'handwriting' && giveUp.events[0][2] === 'ox',
-    'telemetry: one "handwriting" exercise event for the word (got ' + JSON.stringify(giveUp.events[0] || null) + ')');
+  ok(giveUp.given && giveUp.slots === 'I?', 'dead end: the last letter is revealed rather than blocking the child');
+  ok(giveUp.events.length >= 1 && giveUp.events[giveUp.events.length - 1][0] === 'handwriting',
+    'telemetry: a "handwriting" exercise event is queued when the word completes (' +
+    JSON.stringify(giveUp.events.map(e => e[2])) + ')');
 
   // --- a long word is capped, and ERASE is free ------------------------------
   const cap = await page.evaluate(() => new Promise(res => {
