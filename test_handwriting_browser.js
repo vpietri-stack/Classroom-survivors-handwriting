@@ -110,6 +110,9 @@ const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
           x = x2 + 1;
         }
       }
+      if (skip && skip.mirrorX) {
+        for (const st of strokes) for (const p of st) p.x = HW_SIZE - 1 - p.x;
+      }
       return strokes;
     };
     // One unbroken vertical stroke, for the stroke-count rule.
@@ -183,6 +186,49 @@ const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
   await drawLetter('l');
   s = await state();
   ok(s.cursor === 1 && s.slots === 'L__', 'accept: a drawn "l" fills an "l" gap');
+
+  // Good letters across shapes still accept with the narrow pen.
+  for (const [word, gap, letter, shown] of [
+    ['dig', 0, 'd', 'D'], ['pig', 2, 'g', 'G'], ['box', 0, 'b', 'B'], ['tap', 0, 't', 'T']
+  ]) {
+    await loadWord(word, [gap]);
+    await drawLetter(letter);
+    s = await state();
+    ok(s.cursor === 1 && s.slots.indexOf(shown) !== -1,
+      'accept: a drawn "' + letter + '" fills its gap in "' + word + '"');
+  }
+
+  // --- the slips the classroom reported, now refused ---------------------------
+  for (const [draw, mirror, word, gap, target] of [
+    ['l', false, 'tap', 0, 't'],        // bare stem offered for t
+    ['c', false, 'cat', 1, 'a'],        // open c offered for a
+    ['c', false, 'dig', 0, 'd'],        // open c offered for d
+    ['a', false, 'pig', 2, 'g'],        // a offered for g (no descender)
+    ['c', true, 'box', 0, 'b']          // backwards c offered for b
+  ]) {
+    await loadWord(word, [gap]);
+    await drawLetter(draw, mirror ? { mirrorX: true } : null);
+    s = await state();
+    ok(s.cursor === 0,
+      'refuse: a drawn "' + (mirror ? 'backwards ' : '') + draw + '" is refused for "' + target +
+      '" (missing=' + (s.last ? s.last.missing : '?') + ')');
+  }
+
+  // --- start / end anchors are derived and painted -----------------------------
+  const anchors = await page.evaluate(() => {
+    const a = hwGlyphAnchors('l');
+    return a && a.start && a.end ? { sy: a.start.y, ey: a.end.y } : null;
+  });
+  ok(anchors && anchors.sy < 60 && anchors.ey > 90,
+    'anchors: the "l" start point is at the top and the end point at the bottom');
+  const anchorPixels = await page.evaluate(() => {
+    const cv = document.querySelector('.hw-trace-canvas');
+    const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+    let green = 0;
+    for (let p = 0; p < d.length; p += 4) if (d[p + 1] > 120 && d[p] < 90 && d[p + 2] < 110) green++;
+    return green;
+  });
+  ok(anchorPixels > 50, 'anchors: the green start dot is actually painted on the paper (' + anchorPixels + ' px)');
 
   // --- letters in separate pieces need separate strokes -----------------------
   const iDotCut = await page.evaluate(() => hwBbox(hwGlyphMask('i'), HW_SIZE).y0 + 16);

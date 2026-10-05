@@ -121,8 +121,8 @@ ok(HW.hwAccept(score(offCentre, GUIDE, true), HW.HW_PROFILE.free),
   'normalise: a correctly-sized ring written off to one side still passes');
 
 // ...but size is part of handwriting, and vertical stretching is what used to
-// hide missing dots and crossbars, so the scale clamp is deliberately narrow.
-const smallStrokes = ringStroke(34, 88, 18, 90);
+// hide missing dots and crossbars, so the scale clamp stays bounded.
+const smallStrokes = ringStroke(34, 88, 12, 90);
 const smallRaw = score(smallStrokes, GUIDE, false);
 const smallNorm = score(smallStrokes, GUIDE, true);
 ok(!HW.hwAccept(smallRaw, HW.HW_PROFILE.free),
@@ -135,19 +135,24 @@ ok(!HW.hwAccept(huge, HW.HW_PROFILE.free),
   'normalise: the scale clamp stops a letter drawn right to the box edge from passing');
 
 // ---------------------------------------------------------------------------
-// the scaffold must be a safety net, never a harder test
+// the scaffold must rescue, never trap
 // ---------------------------------------------------------------------------
-ok(HW.HW_PROFILE.guided.precision <= HW.HW_PROFILE.free.precision &&
-  HW.HW_PROFILE.guided.recall <= HW.HW_PROFILE.free.recall,
-  'profile: the guided thresholds are looser than writing from memory');
+// The guided stage is looser where a stuck child needs rescue — fill and the
+// missing-part bar — but STRICTER on cover: with the outline visible, stray ink
+// off the letter is a worse signal, not a better one.
+ok(HW.HW_PROFILE.guided.recall <= HW.HW_PROFILE.free.recall &&
+  HW.HW_PROFILE.guided.maxMissing >= HW.HW_PROFILE.free.maxMissing,
+  'profile: the guided stage is looser on fill and on missing parts');
+ok(HW.HW_PROFILE.guided.precision > HW.HW_PROFILE.free.precision,
+  'profile: ...and deliberately stricter on cover, because the outline fixes placement');
 
 const borderline = {
-  precision: HW.HW_PROFILE.free.precision,
+  precision: Math.max(HW.HW_PROFILE.free.precision, HW.HW_PROFILE.guided.precision),
   recall: HW.HW_PROFILE.free.recall,
   rawInkCount: HW.HW_MIN_INK
 };
 ok(HW.hwAccept(borderline, HW.HW_PROFILE.free) && HW.hwAccept(borderline, HW.HW_PROFILE.guided),
-  'profile: a trace that just clears the free bar also clears the guided bar');
+  'profile: a trace clearing both cover bars and the free fill bar passes in either stage');
 
 // ---------------------------------------------------------------------------
 // case folding

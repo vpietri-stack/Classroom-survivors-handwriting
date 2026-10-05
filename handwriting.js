@@ -18,8 +18,11 @@
 // =============================================================================
 
 var HW_SIZE = 128;              // normalised mask space
-var HW_PEN = 14;                // pen width in mask units (~11% of the box)
-var HW_TOL = 5;                 // dilation radius = the tolerance band
+var HW_PEN = 9;                 // pen width in mask units: NARROWER than a glyph
+                                // stem (~11). A fat pen blankets neighbouring
+                                // letters' ink — an "a" trace covering a "g" —
+                                // which is what let confusable letters through.
+var HW_TOL = 4;                 // dilation radius = the tolerance band
 var HW_MIN_INK = 200;           // a single tap can never pass
 
 // Glyph geometry, expressed as fractions of the box so the visible outline and
@@ -39,7 +42,7 @@ var HW_BASELINE = 0.80;         // baseline y  = frac  * box
 // (Fredoka's l tail, ~13% of the glyph).
 var HW_PROFILE = {
     free: { precision: 0.65, recall: 0.90, maxMissing: 0.08 },
-    guided: { precision: 0.60, recall: 0.75, maxMissing: 1.01 }
+    guided: { precision: 0.70, recall: 0.85, maxMissing: 0.20 }
 };
 
 // Must match the round's own punctuation list in study_mode.js.
@@ -180,7 +183,10 @@ function hwNormalise(ink, guide, size) {
     if (!ic || !gc) return ink;
     var ih = Math.max(1, ib.y1 - ib.y0), gh = Math.max(1, gb.y1 - gb.y0);
     var scale = gh / ih;
-    scale = Math.max(0.9, Math.min(1.1, scale));
+    // Wide on purpose: children drift in SIZE far more than the old +-10% clamp
+    // allowed, and they experience a size refusal as "it wasn't centred". The
+    // missing-part, extent and fill guards cover what a free scale could abuse.
+    scale = Math.max(0.75, Math.min(1.35, scale));
     var icx = ic.x, icy = ib.y1;
     var gcx = gc.x, gcy = gb.y1;
     var out = new Uint8Array(size * size);
@@ -320,6 +326,33 @@ function hwGuideComponents(letter) {
     }
     _hwGuideCompCache[letter] = comps;
     return comps;
+}
+
+var _hwAnchorCache = {};
+
+/**
+ * Where a letter begins and ends, as two points on the glyph: the centre of its
+ * topmost ink row and of its bottommost ink row. Derived, not authored, so it
+ * tracks whatever font is loaded. They are drawn on the paper as a green start
+ * dot and a red end ring — the workbook cue for "the letter lives between these",
+ * which is the axis children drift on.
+ */
+function hwGlyphAnchors(letter) {
+    if (_hwAnchorCache[letter]) return _hwAnchorCache[letter];
+    var mask = hwGlyphMask(letter);
+    var start = null, end = null;
+    for (var y = 0; y < HW_SIZE; y++) {
+        var x0 = -1, x1 = -1;
+        for (var x = 0; x < HW_SIZE; x++) {
+            if (mask[y * HW_SIZE + x]) { if (x0 < 0) x0 = x; x1 = x; }
+        }
+        if (x0 >= 0) {
+            if (!start) start = { x: (x0 + x1) / 2, y: y };
+            end = { x: (x0 + x1) / 2, y: y };
+        }
+    }
+    _hwAnchorCache[letter] = { start: start, end: end };
+    return _hwAnchorCache[letter];
 }
 
 /**
@@ -564,6 +597,30 @@ function hwCreateTraceBox(opts) {
         drawRuling();
         if (guided && target) drawOutline();
         drawInk();
+        drawAnchors();
+    }
+
+    // Green dot = where the letter starts, red ring = where it finishes. Drawn
+    // over the ink so they stay visible as a placement cue while writing.
+    function drawAnchors() {
+        if (!target) return;
+        var a = hwGlyphAnchors(target.toLowerCase());
+        if (!a.start || !a.end) return;
+        var unit = cssSize / HW_SIZE;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(a.start.x * unit, a.start.y * unit, 7, 0, Math.PI * 2);
+        ctx.fillStyle = '#16a34a';
+        ctx.fill();
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(a.end.x * unit, a.end.y * unit, 6, 0, Math.PI * 2);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#dc2626';
+        ctx.stroke();
+        ctx.restore();
     }
 
     // Faint ruled lines, on the same baseline the glyph is drawn to.
@@ -735,6 +792,7 @@ if (typeof module !== 'undefined' && module.exports) {
         hwRasterise: hwRasterise,
         hwNormalise: hwNormalise, hwScore: hwScore, hwScoreStrokes: hwScoreStrokes,
         hwScoreLetter: hwScoreLetter, hwMissingPart: hwMissingPart, hwVerify: hwVerify,
+        hwGlyphAnchors: hwGlyphAnchors,
         hwAccept: hwAccept,
         hwPickGaps: hwPickGaps, hwOtherCase: hwOtherCase
     };
