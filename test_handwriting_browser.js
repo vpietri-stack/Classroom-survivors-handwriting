@@ -214,13 +214,37 @@ const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
       '" (missing=' + (s.last ? s.last.missing : '?') + ')');
   }
 
-  // --- start / end anchors are derived and painted -----------------------------
-  const anchors = await page.evaluate(() => {
-    const a = hwGlyphAnchors('l');
-    return a && a.start && a.end ? { sy: a.start.y, ey: a.end.y } : null;
+  // --- start / end cues sit on the letter's ink, in the right places -----------
+  const anchorCheck = await page.evaluate(() => {
+    const letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    const bad = [];
+    for (const ch of letters) {
+      const d = hwDilate(hwGlyphMask(ch), HW_SIZE, 6);
+      const a = hwGlyphAnchors(ch);
+      const on = (p) => !!p && p.x >= 0 && p.y >= 0 && p.x < HW_SIZE && p.y < HW_SIZE &&
+        d[Math.round(p.y) * HW_SIZE + Math.round(p.x)] === 1;
+      if (!on(a.start)) bad.push(ch + ':start');
+      if (!on(a.end)) bad.push(ch + ':end');
+    }
+    return bad;
   });
-  ok(anchors && anchors.sy < 60 && anchors.ey > 90,
-    'anchors: the "l" start point is at the top and the end point at the bottom');
+  ok(anchorCheck.length === 0,
+    'anchors: every letter\'s start and end point sits on its own ink' +
+    (anchorCheck.length ? ' (off: ' + anchorCheck.join(', ') + ')' : ''));
+
+  const cueShape = await page.evaluate(() => {
+    const c = hwGlyphAnchors('c'), a = hwGlyphAnchors('a'), t = hwGlyphAnchors('t');
+    const cb = hwBbox(hwGlyphMask('c'), HW_SIZE), ab = hwBbox(hwGlyphMask('a'), HW_SIZE);
+    return {
+      cStartRight: c.start.x > cb.x0 + (cb.x1 - cb.x0) * 0.6,
+      cEndRight: c.end.x > cb.x0 + (cb.x1 - cb.x0) * 0.6,
+      aEndBottomRight: a.end.y > ab.y0 + (ab.y1 - ab.y0) * 0.8 && a.end.x > ab.x0 + (ab.x1 - ab.x0) * 0.6,
+      tEndOnBar: t.end.y < hwBbox(hwGlyphMask('t'), HW_SIZE).y0 + 25
+    };
+  });
+  ok(cueShape.cStartRight && cueShape.cEndRight, 'anchors: "c" starts and ends at its opening on the right');
+  ok(cueShape.aEndBottomRight, 'anchors: "a" finishes at the bottom of its stem');
+  ok(cueShape.tEndOnBar, 'anchors: "t" finishes on its crossbar');
   const anchorPixels = await page.evaluate(() => {
     const cv = document.querySelector('.hw-trace-canvas');
     const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;

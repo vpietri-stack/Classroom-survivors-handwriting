@@ -330,29 +330,78 @@ function hwGuideComponents(letter) {
 
 var _hwAnchorCache = {};
 
+// Where each letter's pen starts and finishes, in UK infant print order, as
+// fractions of the letter's own box (x right, y down). Authored, not derived:
+// deriving from the outline put the "c" start at top-centre and the "a" end
+// under the bowl, which is not how the letters are written. Corrections are a
+// one-line edit here; test_handwriting_browser.js fails if any point lands off
+// the glyph's ink.
+var HW_STROKE_CUES = {
+    a: [0.80, 0.10, 0.95, 1.00], b: [0.30, 0.00, 0.40, 0.98],
+    c: [0.85, 0.15, 0.85, 0.90], d: [0.62, 0.42, 0.95, 1.00],
+    e: [0.15, 0.50, 0.85, 0.90], f: [0.80, 0.05, 0.90, 0.45],
+    g: [0.80, 0.10, 0.15, 1.00], h: [0.30, 0.00, 0.95, 1.00],
+    i: [0.50, 0.40, 0.50, 0.06], j: [0.70, 0.40, 0.70, 0.08],
+    k: [0.30, 0.00, 0.90, 1.00], l: [0.50, 0.00, 0.60, 0.95],
+    m: [0.20, 0.30, 0.95, 1.00], n: [0.25, 0.30, 0.95, 1.00],
+    o: [0.75, 0.10, 0.80, 0.20], p: [0.30, 0.30, 0.40, 0.60],
+    q: [0.62, 0.10, 0.95, 1.00], r: [0.25, 0.30, 0.90, 0.35],
+    s: [0.80, 0.15, 0.20, 0.90], t: [0.50, 0.00, 0.95, 0.35],
+    u: [0.15, 0.30, 0.90, 1.00], v: [0.10, 0.30, 0.90, 0.30],
+    w: [0.05, 0.30, 0.95, 0.30], x: [0.10, 0.30, 0.12, 0.98],
+    y: [0.15, 0.30, 0.35, 0.98], z: [0.10, 0.30, 0.90, 1.00],
+    A: [0.05, 1.00, 0.95, 0.65], B: [0.25, 0.00, 0.30, 1.00],
+    C: [0.85, 0.10, 0.85, 0.90], D: [0.25, 0.00, 0.30, 1.00],
+    E: [0.20, 0.00, 0.90, 1.00], F: [0.20, 0.00, 0.90, 0.50],
+    G: [0.85, 0.10, 0.85, 0.55], H: [0.15, 0.00, 0.85, 0.50],
+    I: [0.50, 0.00, 0.50, 1.00], J: [0.90, 0.02, 0.15, 0.90],
+    K: [0.15, 0.02, 0.90, 1.00], L: [0.25, 0.00, 0.90, 1.00],
+    M: [0.10, 1.00, 0.90, 1.00], N: [0.10, 1.00, 0.90, 1.00],
+    O: [0.75, 0.10, 0.80, 0.20], P: [0.25, 1.00, 0.30, 0.50],
+    Q: [0.75, 0.10, 0.95, 0.95], R: [0.25, 1.00, 0.90, 1.00],
+    S: [0.80, 0.10, 0.20, 0.90], T: [0.05, 0.00, 0.50, 1.00],
+    U: [0.10, 0.00, 0.90, 1.00], V: [0.10, 0.00, 0.95, 0.02],
+    W: [0.08, 0.02, 0.95, 0.00], X: [0.10, 0.00, 0.10, 1.00],
+    Y: [0.10, 0.00, 0.50, 1.00], Z: [0.10, 0.00, 0.90, 1.00]
+};
+
 /**
- * Where a letter begins and ends, as two points on the glyph: the centre of its
- * topmost ink row and of its bottommost ink row. Derived, not authored, so it
- * tracks whatever font is loaded. They are drawn on the paper as a green start
- * dot and a red end ring — the workbook cue for "the letter lives between these",
- * which is the axis children drift on.
+ * Where a letter begins and ends on the paper: the authored stroke cue mapped
+ * onto the glyph's box, falling back to the outline's top/bottom for any
+ * character without a cue. Drawn as a green start dot and a red end ring — the
+ * workbook cue for "the letter lives between these".
  */
 function hwGlyphAnchors(letter) {
     if (_hwAnchorCache[letter]) return _hwAnchorCache[letter];
-    var mask = hwGlyphMask(letter);
-    var start = null, end = null;
-    for (var y = 0; y < HW_SIZE; y++) {
-        var x0 = -1, x1 = -1;
-        for (var x = 0; x < HW_SIZE; x++) {
-            if (mask[y * HW_SIZE + x]) { if (x0 < 0) x0 = x; x1 = x; }
-        }
-        if (x0 >= 0) {
-            if (!start) start = { x: (x0 + x1) / 2, y: y };
-            end = { x: (x0 + x1) / 2, y: y };
+    var cue = HW_STROKE_CUES[letter];
+    var out = null;
+    if (cue) {
+        var gb = hwBbox(hwGlyphMask(letter), HW_SIZE);
+        if (gb) {
+            var w = gb.x1 - gb.x0, h = gb.y1 - gb.y0;
+            out = {
+                start: { x: gb.x0 + cue[0] * w, y: gb.y0 + cue[1] * h },
+                end: { x: gb.x0 + cue[2] * w, y: gb.y0 + cue[3] * h }
+            };
         }
     }
-    _hwAnchorCache[letter] = { start: start, end: end };
-    return _hwAnchorCache[letter];
+    if (!out) {
+        var mask = hwGlyphMask(letter);
+        var start = null, end = null;
+        for (var y = 0; y < HW_SIZE; y++) {
+            var x0 = -1, x1 = -1;
+            for (var x = 0; x < HW_SIZE; x++) {
+                if (mask[y * HW_SIZE + x]) { if (x0 < 0) x0 = x; x1 = x; }
+            }
+            if (x0 >= 0) {
+                if (!start) start = { x: (x0 + x1) / 2, y: y };
+                end = { x: (x0 + x1) / 2, y: y };
+            }
+        }
+        out = { start: start, end: end };
+    }
+    _hwAnchorCache[letter] = out;
+    return out;
 }
 
 /**
