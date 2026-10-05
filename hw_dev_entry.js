@@ -21,7 +21,7 @@
         if (old) old.remove();
         var box = document.createElement('div');
         box.id = 'hw-dev-panel';
-        box.style.cssText = 'position:fixed;top:8px;left:8px;z-index:9999;background:#111827ee;' +
+        box.style.cssText = 'position:fixed;bottom:64px;left:8px;z-index:9999;background:#111827ee;' +
             'color:#e5e7eb;border:1px solid #4b5563;border-radius:10px;padding:8px 10px;' +
             'font:12px/1.5 sans-serif;display:flex;gap:6px;align-items:center;max-width:92vw;flex-wrap:wrap';
         var input = document.createElement('input');
