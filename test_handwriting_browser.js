@@ -90,7 +90,7 @@ const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
     // A "pen path" for a letter: one dot per ink run per row, i.e. the letter's
     // own centreline. `skip` is DATA (functions cannot cross into the page):
     //   { xGt } / { xLt } / { yLt }   omit one side of a cut line
-    window.__hwPath = function (letter, skip) {
+    window.__hwPath = function (letter, skip, tf) {
       const omit = (p) => {
         if (!skip) return false;
         if (skip.xGt !== undefined) return p.x > skip.xGt;
@@ -112,6 +112,13 @@ const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
       }
       if (skip && skip.mirrorX) {
         for (const st of strokes) for (const p of st) p.x = HW_SIZE - 1 - p.x;
+      }
+      // tf = { sc, dx, dy }: scale about the box centre, then shift, in box units.
+      if (tf) {
+        for (const st of strokes) for (const p of st) {
+          p.x = 64 + (p.x - 64) * tf.sc + tf.dx * HW_SIZE;
+          p.y = 81 + (p.y - 81) * tf.sc + tf.dy * HW_SIZE;
+        }
       }
       return strokes;
     };
@@ -214,45 +221,24 @@ const ADVANCE = 600;   // > the round's 420ms wait before showing the next gap
       '" (missing=' + (s.last ? s.last.missing : '?') + ')');
   }
 
-  // --- start / end cues sit on the letter's ink, in the right places -----------
-  const anchorCheck = await page.evaluate(() => {
-    const letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-    const bad = [];
-    for (const ch of letters) {
-      const d = hwDilate(hwGlyphMask(ch), HW_SIZE, 6);
-      const a = hwGlyphAnchors(ch);
-      const on = (p) => !!p && p.x >= 0 && p.y >= 0 && p.x < HW_SIZE && p.y < HW_SIZE &&
-        d[Math.round(p.y) * HW_SIZE + Math.round(p.x)] === 1;
-      if (!on(a.start)) bad.push(ch + ':start');
-      if (!on(a.end)) bad.push(ch + ':end');
-    }
-    return bad;
-  });
-  ok(anchorCheck.length === 0,
-    'anchors: every letter\'s start and end point sits on its own ink' +
-    (anchorCheck.length ? ' (off: ' + anchorCheck.join(', ') + ')' : ''));
-
-  const cueShape = await page.evaluate(() => {
-    const c = hwGlyphAnchors('c'), a = hwGlyphAnchors('a'), t = hwGlyphAnchors('t');
-    const cb = hwBbox(hwGlyphMask('c'), HW_SIZE), ab = hwBbox(hwGlyphMask('a'), HW_SIZE);
-    return {
-      cStartRight: c.start.x > cb.x0 + (cb.x1 - cb.x0) * 0.6,
-      cEndRight: c.end.x > cb.x0 + (cb.x1 - cb.x0) * 0.6,
-      aEndBottomRight: a.end.y > ab.y0 + (ab.y1 - ab.y0) * 0.8 && a.end.x > ab.x0 + (ab.x1 - ab.x0) * 0.6,
-      tEndOnBar: t.end.y < hwBbox(hwGlyphMask('t'), HW_SIZE).y0 + 25
-    };
-  });
-  ok(cueShape.cStartRight && cueShape.cEndRight, 'anchors: "c" starts and ends at its opening on the right');
-  ok(cueShape.aEndBottomRight, 'anchors: "a" finishes at the bottom of its stem');
-  ok(cueShape.tEndOnBar, 'anchors: "t" finishes on its crossbar');
-  const anchorPixels = await page.evaluate(() => {
-    const cv = document.querySelector('.hw-trace-canvas');
-    const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
-    let green = 0;
-    for (let p = 0; p < d.length; p += 4) if (d[p + 1] > 120 && d[p] < 90 && d[p + 2] < 110) green++;
-    return green;
-  });
-  ok(anchorPixels > 50, 'anchors: the green start dot is actually painted on the paper (' + anchorPixels + ' px)');
+  // --- shape, not place: shifted and resized letters still pass ---------------
+  // The classroom rule: an "a" written like an "a" passes wherever it lands on
+  // the paper and at whatever size, as long as the shape is right.
+  for (const tf of [
+    { sc: 1, dx: 0, dy: 0 },
+    { sc: 1, dx: 0.15, dy: -0.10 },
+    { sc: 1, dx: -0.12, dy: 0.10 },
+    { sc: 1, dx: 0.18, dy: 0.14 },
+    { sc: 0.85, dx: -0.10, dy: 0.12 },
+    { sc: 1.15, dx: 0.05, dy: 0.05 }
+  ]) {
+    await loadWord('cot', [1]);
+    await page.evaluate(([l, t]) => window.__hwDraw(window.__hwPath(l, null, t)), ['o', tf]);
+    await page.waitForTimeout(SETTLE);
+    s = await state();
+    ok(s.cursor === 1,
+      'shape: an "o" at scale ' + tf.sc + ' shifted (' + tf.dx + ', ' + tf.dy + ') is still accepted');
+  }
 
   // --- letters in separate pieces need separate strokes -----------------------
   const iDotCut = await page.evaluate(() => hwBbox(hwGlyphMask('i'), HW_SIZE).y0 + 16);

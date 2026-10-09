@@ -62,6 +62,15 @@ var HW_MAX_MISSING = 0.10;
 // letters and x-height blobs offered for tall ones.
 var HW_MIN_EXTENT = 0.7;
 
+// Position is forgiven completely (the ink is recentred onto the guide), and
+// size is forgiven within this range: a letter written somewhat too big or too
+// small still matches on shape. The range stays bounded because beyond it a
+// HALF-drawn stem stretches enough to impersonate a complete letter and would be
+// accepted mid-stroke; extremes outside it fall through to the outline scaffold,
+// which is the right place for a child whose letter is the wrong size.
+var HW_SCALE_MIN = 0.75;
+var HW_SCALE_MAX = 1.35;
+
 // After a pen lift that does NOT complete the letter, wait this long for the
 // next stroke before judging the attempt. Letters like t, i, f, x need the pen
 // to leave the paper between strokes; judging on the first lift made them
@@ -183,10 +192,7 @@ function hwNormalise(ink, guide, size) {
     if (!ic || !gc) return ink;
     var ih = Math.max(1, ib.y1 - ib.y0), gh = Math.max(1, gb.y1 - gb.y0);
     var scale = gh / ih;
-    // Wide on purpose: children drift in SIZE far more than the old +-10% clamp
-    // allowed, and they experience a size refusal as "it wasn't centred". The
-    // missing-part, extent and fill guards cover what a free scale could abuse.
-    scale = Math.max(0.75, Math.min(1.35, scale));
+    scale = Math.max(HW_SCALE_MIN, Math.min(HW_SCALE_MAX, scale));
     var icx = ic.x, icy = ib.y1;
     var gcx = gc.x, gcy = gb.y1;
     var out = new Uint8Array(size * size);
@@ -328,82 +334,6 @@ function hwGuideComponents(letter) {
     return comps;
 }
 
-var _hwAnchorCache = {};
-
-// Where each letter's pen starts and finishes, in UK infant print order, as
-// fractions of the letter's own box (x right, y down). Authored, not derived:
-// deriving from the outline put the "c" start at top-centre and the "a" end
-// under the bowl, which is not how the letters are written. Corrections are a
-// one-line edit here; test_handwriting_browser.js fails if any point lands off
-// the glyph's ink.
-var HW_STROKE_CUES = {
-    a: [0.80, 0.10, 0.95, 1.00], b: [0.30, 0.00, 0.40, 0.98],
-    c: [0.85, 0.15, 0.85, 0.90], d: [0.62, 0.42, 0.95, 1.00],
-    e: [0.15, 0.50, 0.85, 0.90], f: [0.80, 0.05, 0.90, 0.45],
-    g: [0.80, 0.10, 0.15, 1.00], h: [0.30, 0.00, 0.95, 1.00],
-    i: [0.50, 0.40, 0.50, 0.06], j: [0.70, 0.40, 0.70, 0.08],
-    k: [0.30, 0.00, 0.90, 1.00], l: [0.50, 0.00, 0.60, 0.95],
-    m: [0.20, 0.30, 0.95, 1.00], n: [0.25, 0.30, 0.95, 1.00],
-    o: [0.75, 0.10, 0.80, 0.20], p: [0.30, 0.30, 0.40, 0.60],
-    q: [0.62, 0.10, 0.95, 1.00], r: [0.25, 0.30, 0.90, 0.35],
-    s: [0.80, 0.15, 0.20, 0.90], t: [0.50, 0.00, 0.95, 0.35],
-    u: [0.15, 0.30, 0.90, 1.00], v: [0.10, 0.30, 0.90, 0.30],
-    w: [0.05, 0.30, 0.95, 0.30], x: [0.10, 0.30, 0.12, 0.98],
-    y: [0.15, 0.30, 0.35, 0.98], z: [0.10, 0.30, 0.90, 1.00],
-    A: [0.05, 1.00, 0.95, 0.65], B: [0.25, 0.00, 0.30, 1.00],
-    C: [0.85, 0.10, 0.85, 0.90], D: [0.25, 0.00, 0.30, 1.00],
-    E: [0.20, 0.00, 0.90, 1.00], F: [0.20, 0.00, 0.90, 0.50],
-    G: [0.85, 0.10, 0.85, 0.55], H: [0.15, 0.00, 0.85, 0.50],
-    I: [0.50, 0.00, 0.50, 1.00], J: [0.90, 0.02, 0.15, 0.90],
-    K: [0.15, 0.02, 0.90, 1.00], L: [0.25, 0.00, 0.90, 1.00],
-    M: [0.10, 1.00, 0.90, 1.00], N: [0.10, 1.00, 0.90, 1.00],
-    O: [0.75, 0.10, 0.80, 0.20], P: [0.25, 1.00, 0.30, 0.50],
-    Q: [0.75, 0.10, 0.95, 0.95], R: [0.25, 1.00, 0.90, 1.00],
-    S: [0.80, 0.10, 0.20, 0.90], T: [0.05, 0.00, 0.50, 1.00],
-    U: [0.10, 0.00, 0.90, 1.00], V: [0.10, 0.00, 0.95, 0.02],
-    W: [0.08, 0.02, 0.95, 0.00], X: [0.10, 0.00, 0.10, 1.00],
-    Y: [0.10, 0.00, 0.50, 1.00], Z: [0.10, 0.00, 0.90, 1.00]
-};
-
-/**
- * Where a letter begins and ends on the paper: the authored stroke cue mapped
- * onto the glyph's box, falling back to the outline's top/bottom for any
- * character without a cue. Drawn as a green start dot and a red end ring — the
- * workbook cue for "the letter lives between these".
- */
-function hwGlyphAnchors(letter) {
-    if (_hwAnchorCache[letter]) return _hwAnchorCache[letter];
-    var cue = HW_STROKE_CUES[letter];
-    var out = null;
-    if (cue) {
-        var gb = hwBbox(hwGlyphMask(letter), HW_SIZE);
-        if (gb) {
-            var w = gb.x1 - gb.x0, h = gb.y1 - gb.y0;
-            out = {
-                start: { x: gb.x0 + cue[0] * w, y: gb.y0 + cue[1] * h },
-                end: { x: gb.x0 + cue[2] * w, y: gb.y0 + cue[3] * h }
-            };
-        }
-    }
-    if (!out) {
-        var mask = hwGlyphMask(letter);
-        var start = null, end = null;
-        for (var y = 0; y < HW_SIZE; y++) {
-            var x0 = -1, x1 = -1;
-            for (var x = 0; x < HW_SIZE; x++) {
-                if (mask[y * HW_SIZE + x]) { if (x0 < 0) x0 = x; x1 = x; }
-            }
-            if (x0 >= 0) {
-                if (!start) start = { x: (x0 + x1) / 2, y: y };
-                end = { x: (x0 + x1) / 2, y: y };
-            }
-        }
-        out = { start: start, end: end };
-    }
-    _hwAnchorCache[letter] = out;
-    return out;
-}
-
 /**
  * Largest connected piece of the guide that the ink never reached, as a fraction
  * of the guide's ink, after eroding away anything thinner than a stroke.
@@ -455,11 +385,22 @@ function hwMissingPart(guide, inkDil, size, erode) {
 }
 
 /** Score raw ink against one letter, normalised to that letter's own shape. */
-function hwScoreLetter(letter, ink, tol) {
+function hwScoreLetter(letter, ink, tol, pen) {
+    var width = pen === undefined ? HW_PEN : pen;
     var guide = hwGlyphMask(letter);
     var norm = hwNormalise(ink, guide, HW_SIZE);
-    var inkDil = hwDilate(norm, HW_SIZE, tol);
-    var guideDil = hwGuideDilated(letter, tol);
+    // Rescaling changes the pen's effective thickness: shrinking a big letter
+    // thins its ink, which would look like "failed to cover the letter", and
+    // enlarging a small one fattens it, which would look like stray ink. Give
+    // back exactly the thickness the scaling took away (or gave).
+    var ib = hwBbox(ink, HW_SIZE), gb = hwBbox(guide, HW_SIZE);
+    var sc = 1;
+    if (ib && gb) {
+        sc = (gb.y1 - gb.y0 + 1) / (ib.y1 - ib.y0 + 1);
+        sc = Math.max(HW_SCALE_MIN, Math.min(HW_SCALE_MAX, sc));
+    }
+    var inkDil = hwDilate(norm, HW_SIZE, tol + Math.max(0, (1 - sc) * width / 2));
+    var guideDil = hwGuideDilated(letter, tol + Math.max(0, (sc - 1) * width / 2));
     var inkCount = 0, inside = 0, guideCount = 0, covered = 0;
     for (var p = 0; p < HW_SIZE * HW_SIZE; p++) {
         if (norm[p]) { inkCount++; if (guideDil[p]) inside++; }
@@ -491,8 +432,8 @@ function hwVerify(strokes, target, pen, tol) {
     var raw = hwBbox(ink, HW_SIZE);
     var targetLetter = target.toLowerCase();
     var scores = hwBetterOf(
-        hwScoreLetter(targetLetter, ink, t),
-        hwScoreLetter(targetLetter.toUpperCase(), ink, t)
+        hwScoreLetter(targetLetter, ink, t, pen === undefined ? HW_PEN : pen),
+        hwScoreLetter(targetLetter.toUpperCase(), ink, t, pen === undefined ? HW_PEN : pen)
     );
     scores.rawInkCount = raw ? raw.count : 0;
     // A letter built from separate pieces (i, j: dot + stem) cannot be written
@@ -646,30 +587,6 @@ function hwCreateTraceBox(opts) {
         drawRuling();
         if (guided && target) drawOutline();
         drawInk();
-        drawAnchors();
-    }
-
-    // Green dot = where the letter starts, red ring = where it finishes. Drawn
-    // over the ink so they stay visible as a placement cue while writing.
-    function drawAnchors() {
-        if (!target) return;
-        var a = hwGlyphAnchors(target.toLowerCase());
-        if (!a.start || !a.end) return;
-        var unit = cssSize / HW_SIZE;
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(a.start.x * unit, a.start.y * unit, 7, 0, Math.PI * 2);
-        ctx.fillStyle = '#16a34a';
-        ctx.fill();
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = '#ffffff';
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(a.end.x * unit, a.end.y * unit, 6, 0, Math.PI * 2);
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = '#dc2626';
-        ctx.stroke();
-        ctx.restore();
     }
 
     // Faint ruled lines, on the same baseline the glyph is drawn to.
@@ -841,7 +758,6 @@ if (typeof module !== 'undefined' && module.exports) {
         hwRasterise: hwRasterise,
         hwNormalise: hwNormalise, hwScore: hwScore, hwScoreStrokes: hwScoreStrokes,
         hwScoreLetter: hwScoreLetter, hwMissingPart: hwMissingPart, hwVerify: hwVerify,
-        hwGlyphAnchors: hwGlyphAnchors,
         hwAccept: hwAccept,
         hwPickGaps: hwPickGaps, hwOtherCase: hwOtherCase
     };

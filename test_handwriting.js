@@ -101,7 +101,8 @@ const scribble = [];
 for (let y = 14; y < S - 14; y += 5) scribble.push([{ x: 14, y }, { x: S - 14, y }]);
 const blob = score(scribble, GUIDE, true);
 ok(!HW.hwAccept(blob, HW.HW_PROFILE.free), 'score: a filled-in blob is rejected');
-ok(blob.precision < 0.5, 'score: a blob fails on precision, not recall (p=' + blob.precision.toFixed(2) + ')');
+ok(blob.precision < HW.HW_PROFILE.free.precision,
+  'score: a blob fails on precision, not recall (p=' + blob.precision.toFixed(2) + ')');
 
 const tap = score([[{ x: 64, y: 40 }]], GUIDE, true);
 ok(!HW.hwAccept(tap, HW.HW_PROFILE.free) && tap.rawInkCount < HW.HW_MIN_INK,
@@ -113,26 +114,24 @@ ok(tap.rawInkCount < HW.HW_MIN_INK && tap.inkCount > 0,
   tap.inkCount + ' px)');
 
 // ---------------------------------------------------------------------------
-// normalisation: position is forgiven, size only within ~10%
+// normalisation: shape matters, place and size do not
 // ---------------------------------------------------------------------------
-// Horizontal placement must not matter...
 const offCentre = ringStroke(40, 64, 29, 90);
 ok(HW.hwAccept(score(offCentre, GUIDE, true), HW.HW_PROFILE.free),
-  'normalise: a correctly-sized ring written off to one side still passes');
+  'normalise: a ring written off to one side still passes');
 
-// ...but size is part of handwriting, and vertical stretching is what used to
-// hide missing dots and crossbars, so the scale clamp stays bounded.
-const smallStrokes = ringStroke(34, 88, 12, 90);
-const smallRaw = score(smallStrokes, GUIDE, false);
-const smallNorm = score(smallStrokes, GUIDE, true);
-ok(!HW.hwAccept(smallRaw, HW.HW_PROFILE.free),
-  'normalise: a small off-centre ring fails when scored as-is (r=' + smallRaw.recall.toFixed(2) + ')');
-ok(!HW.hwAccept(smallNorm, HW.HW_PROFILE.free),
-  'normalise: a half-size ring is refused rather than stretched onto the guide');
+const smallNorm = score(ringStroke(40, 64, 25, 90), GUIDE, true);
+ok(HW.hwAccept(smallNorm, HW.HW_PROFILE.free),
+  'normalise: a somewhat small ring still passes (p=' + smallNorm.precision.toFixed(2) +
+  ' r=' + smallNorm.recall.toFixed(2) + ') — modest size drift is not a mistake');
 
-const huge = score(ringStroke(64, 64, 58, 90), GUIDE, true);
-ok(!HW.hwAccept(huge, HW.HW_PROFILE.free),
-  'normalise: the scale clamp stops a letter drawn right to the box edge from passing');
+const tinyNorm = score(ringStroke(34, 88, 15, 90), GUIDE, true);
+ok(!HW.hwAccept(tinyNorm, HW.HW_PROFILE.free),
+  'normalise: a half-size ring is refused and falls to the outline scaffold');
+
+const hugeNorm = score(ringStroke(64, 64, 40, 90), GUIDE, true);
+ok(HW.hwAccept(hugeNorm, HW.HW_PROFILE.free),
+  'normalise: a somewhat large ring still passes — shape is what is judged');
 
 // ---------------------------------------------------------------------------
 // the scaffold must rescue, never trap
